@@ -1,29 +1,25 @@
 #include "encoder.h"
+#include <Arduino.h>
 
-// Наш аппаратный пин датчика Холла
-#define PIN_HALL D7  
+// Физический пин датчика Холла на плате ESP32-C3
+#define PIN_HALL 4 
 
-// Выделяем память под переменные
-volatile long window_pulses = 0; 
-static volatile int pulse_direction = 1; // По умолчанию знак плюс (на открытие)
+volatile long window_pulses = 0;
+int pulse_direction = 1; // 1 - открытие, -1 - закрытие
 
-// АППАРАТНАЯ ФУНКЦИЯ ПРЕРЫВАНИЯ (вызывается из кремния чипа при каждом импульсе)
-// Она полностью игнорирует состояние мотора, позволяя досчитать инерцию после СТОПа
+// Быстрая функция прерывания, выполняемая в оперативной памяти (IRAM)
 void IRAM_ATTR onHallPulse() {
-    window_pulses += pulse_direction; // Крутит счётчик в сторону последнего движения
+    window_pulses += pulse_direction;
 }
 
 void encoder_init() {
-    // Включаем встроенный подтягивающий резистор к 3.3В, чтобы пин не ловил наводки
-    pinMode(PIN_HALL, INPUT_PULLUP); 
+    // Включаем встроенную подтяжку, чтобы нога не ловила воздух
+    pinMode(PIN_HALL, INPUT_PULLUP);
     
-    // Привязываем прерывание: ловим спад сигнала из HIGH в LOW (FALLING)
+    // Привязываем прерывание к спаду уровня (FALLING) на GPIO 4
     attachInterrupt(digitalPinToInterrupt(PIN_HALL), onHallPulse, FALLING);
 }
 
 void encoder_set_direction(int dir) {
-    // Меняет знак счёта (1 или -1). Вызывается сервером при нажатии кнопок хода.
-    if (dir == 1 || dir == -1) {
-        pulse_direction = dir;
-    }
+    pulse_direction = dir;
 }

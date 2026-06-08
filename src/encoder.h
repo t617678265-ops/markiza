@@ -1,9 +1,9 @@
 #pragma once
 #include <Arduino.h>
 
-// Глобальный счётчик импульсов, доступный для чтения всему проекту
-// volatile запрещает процессору кэшировать переменную, так как она меняется в прерывании
+// Делаем переменные и функции видимыми для других файлов проекта
 extern volatile long window_pulses;
+extern int pulse_direction;
 
-void encoder_init();               // Инициализация пина D7 и привязка прерывания
-void encoder_set_direction(int dir); // Установка знака счёта: 1 (открытие), -1 (закрытие)
+void encoder_init();
+void encoder_set_direction(int dir);

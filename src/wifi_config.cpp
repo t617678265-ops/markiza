@@ -1,6 +1,6 @@
 #include "wifi_config.h"
-#include <ESP8266WiFi.h>
-#include <ESPAsyncTCP.h>
+#include <WiFi.h>
+#include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <EEPROM.h>
 
