@@ -3,6 +3,7 @@
 #include "web_server.h"  
 #include "motor.h"       
 #include "encoder.h"     
+#include "current.h"     
 
 // Открываем доступ к переменной счетчика
 extern volatile long window_pulses;
@@ -18,6 +19,7 @@ void setup() {
     wifi_config_init();
     motor_init();   
     encoder_init(); 
+    current_init(); 
     web_server_init();
 
     Serial.println("[SYS] Система полностью готова к работе.");
@@ -34,7 +36,8 @@ void loop() {
 
         // Выводим инфу в консоль только тогда, когда мотор реально находится в движении
         if (target_motor_state != MAN_STOP) {
-            Serial.printf("[PULSE] Мотор крутится. Текущий счёт вала: %ld\n", window_pulses);
+            int current_raw = current_get_raw();
+            Serial.printf("[PULSE] Мотор крутится. Текущий счёт вала: %ld | Ток (raw): %d\n", window_pulses, current_raw);
         }
     }
 }

@@ -49,14 +49,14 @@ void motor_tick() {
         case MAN_OPEN:
             // Открытие: ШИМ на верхний левый канал, открываем нижний правый пин
             digitalWrite(PIN_IN2_LOW, HIGH);
-            ledcWrite(CH_IN1_HIGH, 64); // Скважность 25% от диапазона 255 (мягкий ход)
+            ledcWrite(CH_IN1_HIGH, 128); // Скважность 25% от диапазона 255 (мягкий ход)
             Serial.println("[DRV] Аппаратный ШИМ: ОТКРЫТИЕ (25%)");
             break;
 
         case MAN_CLOSE:
             // Закрытие: ШИМ на верхний правый канал, открываем нижний левый пин
             digitalWrite(PIN_IN1_LOW, HIGH);
-            ledcWrite(CH_IN2_HIGH, 64); // Скважность 25% от диапазона 255
+            ledcWrite(CH_IN2_HIGH, 128); // Скважность 25% от диапазона 255
             Serial.println("[DRV] Аппаратный ШИМ: ЗАКРЫТИЕ (25%)");
             break;
 

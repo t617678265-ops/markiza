@@ -2,7 +2,7 @@
 #include <Arduino.h>
 
 // Физический пин датчика Холла на плате ESP32-C3
-#define PIN_HALL 4 
+#define PIN_HALL 5 
 
 volatile long window_pulses = 0;
 int pulse_direction = 1; // 1 - открытие, -1 - закрытие
