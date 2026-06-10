@@ -5,39 +5,63 @@
 #include "encoder.h"     
 #include "current.h"     
 
-// Открываем доступ к переменной счетчика
 extern volatile long window_pulses;
 
-void setup() {
-    // Гасим встроенный выжигающий глаза RGB светодиод на старте
-    neopixelWrite(RGB_BUILTIN, 0, 0, 0);
+// Хэндл фоновой задачи для изоляции физики мотора
+TaskHandle_t WindowPhysicsTask;
 
+// Выполнение кода на ЯДРЕ 1 (Монопольный контроль привода и энкодера)
+void WindowPhysicsCoreCode(void * pvParameters) {
+    Serial.printf("[CORE] Задача физики привода запущена на ядре: %d\n", xPortGetCoreID());
+    
+    for(;;) {
+        motor_tick(); // Циклический опрос мотора, энкодера и защиты по току
+        
+        static unsigned long log_timer = 0;
+        if (millis() - log_timer >= 300) {
+            log_timer = millis();
+            if (target_motor_state != MAN_STOP) {
+                int current_raw = current_get_raw();
+                Serial.printf("[PULSE] Шаги вала: %ld | Ток АЦП: %d\n", window_pulses, current_raw);
+            }
+        }
+        
+        // Обязательный квант времени FreeRTOS (1 мс) для разгрузки планировщика задач
+        vTaskDelay(pdMS_TO_TICKS(1)); 
+    }
+}
+
+void setup() {
+    // Встроенный RGB светодиод на плате Wemos ESP32 отсутствует, гасить нечего
     Serial.begin(115200);
     delay(500);
-    Serial.println("\n[SYS] Старт Window Driver...");
+    Serial.println("\n[SYS] Старт Window Driver на двухъядерной архитектуре ESP32...");
 
-    wifi_config_init();
+    // Инициализация низкоуровневого железа привода
     motor_init();   
     encoder_init(); 
     current_init(); 
+
+    // Создаем изолированный поток на ЯДРЕ 1. Приоритет 3 (высокий)
+    xTaskCreatePinnedToCore(
+        WindowPhysicsCoreCode,   /* Функция, реализующая задачу */
+        "WindowPhysics",         /* Имя задачи для системы */
+        4096,                    /* Размер стека задачи в байтах */
+        NULL,                    /* Параметры, передаваемые в задачу */
+        3,                       /* Приоритет задачи */
+        &WindowPhysicsTask,      /* Хэндл задачи */
+        1                        /* Идентификатор ядра (Core 1) */
+    );
+
+    // Запуск сетевого стека. По умолчанию инициализируется на ЯДРЕ 0
+    wifi_config_init();
     web_server_init();
 
-    Serial.println("[SYS] Система полностью готова к работе.");
+    Serial.println("[SYS] Планировщик FreeRTOS запущен. Система готова.");
 }
 
 void loop() {
+    // Ядро 0 полностью обрабатывает только сетевые обновления веб-сервера
     web_server_update(); 
-    motor_tick();        
-
-    // БЕЗОПАСНЫЙ ВЫВОД ИМПУЛЬСОВ В СВОБОДНОМ ЦИКЛЕ LOOP
-    static unsigned long log_timer = 0;
-    if (millis() - log_timer >= 300) {
-        log_timer = millis();
-
-        // Выводим инфу в консоль только тогда, когда мотор реально находится в движении
-        if (target_motor_state != MAN_STOP) {
-            int current_raw = current_get_raw();
-            Serial.printf("[PULSE] Мотор крутится. Текущий счёт вала: %ld | Ток (raw): %d\n", window_pulses, current_raw);
-        }
-    }
+    yield();
 }
