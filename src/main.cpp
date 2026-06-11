@@ -4,6 +4,8 @@
 #include "motor.h"       
 #include "encoder.h"     
 #include "current.h"     
+#include "protection.h"  // Подключаем изолированный модуль защиты
+#include "calibrator.h"  // Подключаем модуль калибровки памяти
 
 extern volatile long window_pulses;
 
@@ -14,8 +16,15 @@ TaskHandle_t WindowPhysicsTask;
 void WindowPhysicsCoreCode(void * pvParameters) {
     Serial.printf("[CORE] Задача физики привода запущена на ядре: %d\n", xPortGetCoreID());
     
+    // Инициализируем таймеры модуля защиты перед входом в цикл опроса
+    protection_init();
+    
     for(;;) {
-        motor_tick(); // Циклический опрос мотора, энкодера и защиты по току
+        // Шаг 1: Сначала опрашиваем мотор и обновляем счетчик импульсов энкодера
+        motor_tick(); 
+        
+        // Шаг 2: Теперь проверяем заклинивание вала на основе свежих данных шагов
+        protection_tick(); 
         
         static unsigned long log_timer = 0;
         if (millis() - log_timer >= 300) {
@@ -32,7 +41,6 @@ void WindowPhysicsCoreCode(void * pvParameters) {
 }
 
 void setup() {
-    // Встроенный RGB светодиод на плате Wemos ESP32 отсутствует, гасить нечего
     Serial.begin(115200);
     delay(500);
     Serial.println("\n[SYS] Старт Window Driver на двухъядерной архитектуре ESP32...");
@@ -41,6 +49,9 @@ void setup() {
     motor_init();   
     encoder_init(); 
     current_init(); 
+
+    // Считываем сохраненный эталон длины окна из Flash-памяти Preferences
+    calibrator_init();
 
     // Создаем изолированный поток на ЯДРЕ 1. Приоритет 3 (высокий)
     xTaskCreatePinnedToCore(
