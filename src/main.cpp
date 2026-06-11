@@ -26,6 +26,9 @@ void WindowPhysicsCoreCode(void * pvParameters) {
         // Шаг 2: Теперь проверяем заклинивание вала на основе свежих данных шагов
         protection_tick(); 
         
+        // Шаг 3: Динамически обновляем и сбрасываем флаги блокировок при выходе из упоров
+        calibrator_update_flags();
+        
         static unsigned long log_timer = 0;
         if (millis() - log_timer >= 300) {
             log_timer = millis();

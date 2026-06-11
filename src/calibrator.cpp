@@ -5,6 +5,10 @@
 // Определение глобальных переменных
 long max_window_steps = 0; 
 
+// Инициализация глобальных флагов блокировки пуска в упоры рамы
+bool is_window_fully_closed = false;
+bool is_window_fully_open = false;
+
 // Объект Preferences для работы с энергонезависимой памятью ESP32
 static Preferences prefs;
 
@@ -16,6 +20,11 @@ void calibrator_init() {
     max_window_steps = prefs.getLong("max_steps", 0);
     
     prefs.end();
+    
+    // При старте платы, если в памяти есть обученная база, аккуратно выставляем флаг закрытия
+    if (max_window_steps > 0 && window_pulses <= 5) {
+        is_window_fully_closed = true;
+    }
     
     Serial.printf("[CALIB] Инициализация памяти. Загружено крайнее положение: %ld шагов\n", max_window_steps);
 }
@@ -34,7 +43,11 @@ void calibrator_check_stop_event(MotorControlState last_moving_state) {
         pcnt_counter_clear(PCNT_UNIT_0);
         window_pulses = 0;
         
-        Serial.printf("[CALIB] Упор закрытия зафиксирован. Счетчик аппаратно обнулен.\n");
+        // ВЗВОДИМ БЛОКИРОВКУ: Окно гарантированно в самом низу
+        is_window_fully_closed = true;
+        is_window_fully_open = false;
+        
+        Serial.printf("[CALIB] Упор закрытия зафиксирован. Блокировка пуска вниз АКТИВИРОВАНА.\n");
 
         // ЗОНА НЕЧУВСТВИТЕЛЬНОСТИ 5 ШАГОВ: проверяем отклонение от старой базы
         if (abs(final_offset) > 5) {
@@ -52,6 +65,12 @@ void calibrator_check_stop_event(MotorControlState last_moving_state) {
         if (current_measured_steps < 0) {
             current_measured_steps = 0;
         }
+
+        // ВЗВОДИМ БЛОКИРОВКУ: Окно гарантированно в самом верхнем упоре
+        is_window_fully_open = true;
+        is_window_fully_closed = false;
+        
+        Serial.printf("[CALIB] Упор открытия зафиксирован. Блокировка пуска вверх АКТИВИРОВАНА.\n");
 
         // ВЫЧИСЛЕНИЕ ДЕЛЬТЫ ДЛЯ ЗАЩИТЫ FLASH-ПАМЯТИ ОТ ИЗНОСА
         long steps_delta = abs(current_measured_steps - max_window_steps);
@@ -73,5 +92,19 @@ void calibrator_check_stop_event(MotorControlState last_moving_state) {
             Serial.printf("[CALIB] Положение совпадает с эталоном (дельта: %ld). Запись во Flash пропущена для сохранения ресурса.\n", 
                           steps_delta);
         }
+    }
+}
+
+void calibrator_update_flags() {
+    // Если окно начало открываться и уехало от физической рамы более чем на 5 шагов
+    if (is_window_fully_closed && window_pulses > 5) {
+        is_window_fully_closed = false;
+        Serial.println("[CALIB] Окно вышло из зоны закрытия. Блокировка пуска вниз снята.");
+    }
+
+    // Если окно начало закрываться и опустилось ниже максимальной точки более чем на 5 шагов
+    if (max_window_steps > 0 && is_window_fully_open && (window_pulses < (max_window_steps - 5))) {
+        is_window_fully_open = false;
+        Serial.println("[CALIB] Окно вышло из зоны открытия. Блокировка пуска вверх снята.");
     }
 }
