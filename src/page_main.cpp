@@ -3,10 +3,15 @@
 String get_page_main(int percent, String status_text) {
     String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
     html += "<meta name='viewport' content='width=device-width, initial-scale=1.0, user-scalable=no'>";
+    
+    // Сверхчёткий жирный SVG-Favicon мансардного окна (Синий круг + Белое окно)
+    html += "<link rel='icon' href='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48Y2lyY2xlIGN4PSI1MCIgY3k9IjUwIiByPSI0NSIgZmlsbD0iIzdmOWNjNCIvPjxwYXRoIGQ9Ik0xNSA2NUw4NSAzNU0zNSA3NUw2NSAxNU0yNSA1MGg1MHYyMGgtNTB6IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iOCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjwvc3ZnPg==' type='image/svg+xml'>";
+    
     html += "<style>";
     html += "body{background-color:#22252a;color:#e2e5e9;font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;padding:20px;box-sizing:border-box;}";
     html += ".card{background-color:#2d3139;padding:25px;border-radius:16px;box-shadow:0 6px 20px rgba(0,0,0,0.4);width:100%;max-width:400px;text-align:center;}";
     html += "h2{color:#b0c4de;margin:0 0 5px 0;}";
+    html += ".card p{font-size:14px;color:#a0a5af;margin:5px 0;}";
     html += ".status-val{font-size:32px;font-weight:bold;color:#fff;margin:10px 0 20px 0;}"; 
     html += ".window-svg{background:#1e2127;border-radius:8px;margin-bottom:20px;border:1px solid #3d424d;}";
     html += ".window-frame{stroke:#3d424d;stroke-width:4;fill:none;}";
@@ -25,14 +30,13 @@ String get_page_main(int percent, String status_text) {
     html += ".memory-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:25px;}";
     html += ".btn-mem{padding:12px 5px;border:1px solid #3d424d;border-radius:6px;background-color:#1e2127;color:#b0c4de;font-size:14px;font-weight:bold;cursor:pointer;-webkit-user-select:none;user-select:none;transition:all 0.2s;}";
     html += ".btn-mem:active{background-color:#3d424d;color:#fff;}";
-    html += ".link-setting{display:inline-block;font-size:13px;color:#5c616b;text-decoration:none;margin-top:10px;} .link-setting:hover{color:#7f9cc4;}";
     html += "</style>";
     
     html += "<script>";
     html += "var currentPercent = " + String(percent) + ";";
     html += "var touchTimer = null;";
     html += "var isLongTouch = false;";
-    html += "var isDragging = false;"; // ЖЕЛЕЗНЫЙ ФЛАГ БЛОКИРОВКИ ОТСКОКОВ ПОЛЗУНКА В МОБИЛЬНЫХ БРАУЗЕРАХ
+    html += "var isDragging = false;";
     
     html += "function updateStatus() {";
     html += "  fetch('/status').then(res => res.text()).then(data => {";
@@ -42,7 +46,6 @@ String get_page_main(int percent, String status_text) {
     
     html += "    document.getElementById('v').innerText = currentPercent + '%';";
     
-    // НАДЕЖНАЯ ПРОВЕРКА: Если палец пользователя тащит бегунок, сеть его не перебивает!
     html += "    if(!isDragging) {";
     html += "      document.getElementById('s').value = sliderTarget;";
     html += "      document.getElementById('sl-hint').innerText = sliderTarget + '%';"; 
@@ -104,7 +107,6 @@ String get_page_main(int percent, String status_text) {
 
     html += "<div class='slider-title'>Выставить положение: <span class='slider-val-hint' id='sl-hint'>" + String(percent) + "%</span></div>";
     
-    // ВНЕДРЕНИЕ СОБЫТИЙ БЛОКИРОВКИ ОТСКОКОВ ПРИ ПЕРЕТАСКИВАНИИ ПАЛЬЦЕМ
     html += "<input type='range' min='0' max='100' value='" + String(percent) + "' class='slider' id='s' ";
     html += "oninput='onSliderInput(this.value)' ";
     html += "onmousedown='isDragging=true' ontouchstart='isDragging=true' ";
@@ -120,7 +122,6 @@ String get_page_main(int percent, String status_text) {
     }
     html += "</div>";
 
-    html += "<a href='/setting' class='link-setting'>Сервисные настройки системы</a>";
     html += "</div></body></html>";
     
     return html;
