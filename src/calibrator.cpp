@@ -1,9 +1,9 @@
 #include "calibrator.h"
 #include "encoder.h"
-#include "driver/pcnt.h" // Устраняет ошибку строки 33, добавляя pcnt_counter_clear и PCNT_UNIT_0
 
-// Определение глобальных переменных
-long max_window_steps = 0; 
+// Определение новых глобальных переменных границ
+long config_pos_closed = 0; 
+long config_pos_opened = 0; 
 
 // Инициализация глобальных флагов блокировки пуска в упоры рамы
 bool is_window_fully_closed = false;
@@ -16,95 +16,117 @@ void calibrator_init() {
     // Открываем хранилище в режиме "только чтение" (read-only = true)
     prefs.begin("window_kv", true);
     
-    // Считываем сохраненный эталон шагов. Если данных нет, вернется 0 (по умолчанию)
-    max_window_steps = prefs.getLong("max_steps", 0);
+    // 1. Считываем сохраненные независимые координаты краев
+    config_pos_closed = prefs.getLong("pos_closed", 0);
+    config_pos_opened = prefs.getLong("pos_opened", 2760); // 2760 как эталонный заводской запас
+    
+    // 2. Считываем последнюю живую позицию, на которой остановился вал
+    long last_saved_pos = prefs.getLong("last_pos", 0);
     
     prefs.end();
     
-    // При старте платы, если в памяти есть обученная база, аккуратно выставляем флаг закрытия
-    if (max_window_steps > 0 && window_pulses <= 5) {
+    // 3. ЖЕСТКАЯ ПЕРЕДАЧА: Записываем восстановленное число в энкодер как стартовый офсет
+    encoder_set_offset(last_saved_pos);
+    
+    // На основе восстановленной координаты сразу выставляем флаги блокировок при включении платы
+    if (window_pulses <= (config_pos_closed + 5)) {
         is_window_fully_closed = true;
+        is_window_fully_open = false;
+    } 
+    else if (window_pulses >= (config_pos_opened - 5)) {
+        is_window_fully_open = true;
+        is_window_fully_closed = false;
+    } else {
+        is_window_fully_closed = false;
+        is_window_fully_open = false;
     }
     
-    Serial.printf("[CALIB] Инициализация памяти. Загружено крайнее положение: %ld шагов\n", max_window_steps);
+    Serial.printf("[CALIB] Память загружена: Низ (0%%) = %ld | Верх (100%%) = %ld | Текущая позиция = %ld шагов\n", 
+                  config_pos_closed, config_pos_opened, window_pulses);
 }
 
 void calibrator_check_stop_event(MotorControlState last_moving_state) {
-    // Нам важна реакция только на автоматические команды открытия и закрытия до упора
     if (last_moving_state != MAN_OPEN && last_moving_state != MAN_CLOSE) {
         return;
     }
 
+    long current_measured_steps = window_pulses;
+
     // --- 1. ОБРАБОТКА УПОРА ПРИ ЗАКРЫТИИ (Точка 0%) ---
     if (last_moving_state == MAN_CLOSE) {
-        long final_offset = window_pulses; // Смотрим, где аппаратно встал счетчик до обнуления
+        // Вычисляем отклонение текущего физического упора от старой сохраненной границы
+        long steps_delta = abs(current_measured_steps - config_pos_closed);
 
-        // Принудительно сбрасываем аппаратный счетчик PCNT в физический ноль рамы
-        pcnt_counter_clear(PCNT_UNIT_0);
-        window_pulses = 0;
-        
-        // ВЗВОДИМ БЛОКИРОВКУ: Окно гарантированно в самом низу
         is_window_fully_closed = true;
         is_window_fully_open = false;
         
-        Serial.printf("[CALIB] Упор закрытия зафиксирован. Блокировка пуска вниз АКТИВИРОВАНА.\n");
+        Serial.printf("[CALIB] Упор закрытия зафиксирован на отметке: %ld. Блокировка пуска вниз АКТИВИРОВАНА.\n", current_measured_steps);
 
-        // ЗОНА НЕЧУВСТВИТЕЛЬНОСТИ 5 ШАГОВ: проверяем отклонение от старой базы
-        if (abs(final_offset) > 5) {
-            // Если сдвиг значительный, обновляем ноль в оперативной памяти и логах
-            Serial.printf("[CALIB] Сдвиг нуля составил %ld шагов. База адаптирована.\n", final_offset);
+        // КОРИДОР НЕЧУВСТВИТЕЛЬНОСТИ 5 ШАГОВ: бережем ресурс Flash от микро-люфтов резины
+        if (steps_delta > 5) {
+            config_pos_closed = current_measured_steps;
+            
+            prefs.begin("window_kv", false);
+            prefs.putLong("pos_closed", config_pos_closed);
+            prefs.end();
+            
+            Serial.printf("[CALIB] Граница низа обновлена во Flash: %ld шагов (дельта: %ld)\n", config_pos_closed, steps_delta);
         } else {
-            Serial.printf("[CALIB] Сдвиг нуля незначительный (%ld шагов). Память Flash не перезаписывается.\n", final_offset);
+            config_pos_closed = current_measured_steps;
+            Serial.printf("[CALIB] Совпадение с базой низа (дельта: %ld). Запись во Flash пропущенна.\n", steps_delta);
         }
+        
+        // После любого автостопа принудительно фиксируем финальную координату
+        calibrator_save_current_position();
     }
 
     // --- 2. ОБРАБОТКА УПОРА ПРИ ОТКРЫТИИ (Точка 100%) ---
     else if (last_moving_state == MAN_OPEN) {
-        long current_measured_steps = window_pulses;
+        // Вычисляем отклонение текущего физического упора от старой максимальной границы
+        long steps_delta = abs(current_measured_steps - config_pos_opened);
 
-        if (current_measured_steps < 0) {
-            current_measured_steps = 0;
-        }
-
-        // ВЗВОДИМ БЛОКИРОВКУ: Окно гарантированно в самом верхнем упоре
         is_window_fully_open = true;
         is_window_fully_closed = false;
         
-        Serial.printf("[CALIB] Упор открытия зафиксирован. Блокировка пуска вверх АКТИВИРОВАНА.\n");
+        Serial.printf("[CALIB] Упор открытия зафиксирован на отметке: %ld. Блокировка пуска вверх АКТИВИРОВАНА.\n", current_measured_steps);
 
-        // ВЫЧИСЛЕНИЕ ДЕЛЬТЫ ДЛЯ ЗАЩИТЫ FLASH-ПАМЯТИ ОТ ИЗНОСА
-        long steps_delta = abs(current_measured_steps - max_window_steps);
-
+        // КОРИДОР НЕЧУВСТВИТЕЛЬНОСТИ 5 ШАГОВ: бережем ресурс Flash
         if (steps_delta > 5) {
-            // Отклонение превысило зону нечувствительности в 5 шагов — выполняем физическую запись
-            max_window_steps = current_measured_steps;
+            config_pos_opened = current_measured_steps;
             
-            // Открываем хранилище в режиме записи (read-only = false)
             prefs.begin("window_kv", false);
-            prefs.putLong("max_steps", max_window_steps);
+            prefs.putLong("pos_opened", config_pos_opened);
             prefs.end();
             
-            Serial.printf("[CALIB] ВНИМАНИЕ: Геометрия изменилась! Новая длина хода записана в Flash: %ld шагов (дельта: %ld)\n", 
-                          max_window_steps, steps_delta);
+            Serial.printf("[CALIB] Граница верха обновлена во Flash: %ld шагов (дельта: %ld)\n", config_pos_opened, steps_delta);
         } else {
-            // Отклонение в пределах 5 шагов — подменяем переменную в RAM, но Flash бережем
-            max_window_steps = current_measured_steps;
-            Serial.printf("[CALIB] Положение совпадает с эталоном (дельта: %ld). Запись во Flash пропущена для сохранения ресурса.\n", 
-                          steps_delta);
+            config_pos_opened = current_measured_steps;
+            Serial.printf("[CALIB] Совпадение с базой верха (дельта: %ld). Запись во Flash пропущенна.\n", steps_delta);
         }
+        
+        // После любого автостопа принудительно фиксируем финальную координату
+        calibrator_save_current_position();
     }
 }
 
 void calibrator_update_flags() {
-    // Если окно начало открываться и уехало от физической рамы более чем на 5 шагов
-    if (is_window_fully_closed && window_pulses > 5) {
+    // Если окно начало открываться и уехало от сохраненного нижнего упора более чем на 5 шагов
+    if (is_window_fully_closed && window_pulses > (config_pos_closed + 5)) {
         is_window_fully_closed = false;
         Serial.println("[CALIB] Окно вышло из зоны закрытия. Блокировка пуска вниз снята.");
     }
 
-    // Если окно начало закрываться и опустилось ниже максимальной точки более чем на 5 шагов
-    if (max_window_steps > 0 && is_window_fully_open && (window_pulses < (max_window_steps - 5))) {
+    // Если окно начало закрываться и опустилось ниже сохраненного верхнего упора более чем на 5 шагов
+    if (is_window_fully_open && window_pulses < (config_pos_opened - 5)) {
         is_window_fully_open = false;
         Serial.println("[CALIB] Окно вышло из зоны открытия. Блокировка пуска вверх снята.");
     }
+}
+
+void calibrator_save_current_position() {
+    prefs.begin("window_kv", false);
+    prefs.putLong("last_pos", window_pulses);
+    prefs.end();
+    
+    Serial.printf("[CALIB] Позиция %ld шагов сохранена во Flash.\n", window_pulses);
 }

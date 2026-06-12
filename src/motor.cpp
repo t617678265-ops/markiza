@@ -19,6 +19,10 @@
 // Импортируем флаг из protection.cpp для фильтрации ложных калибровок от кнопки СТОП
 extern bool is_protect_triggered;
 
+// Импортируем новые плавающие координаты границ из calibrator.cpp
+extern long config_pos_closed;
+extern long config_pos_opened;
+
 // Импортируем глобальные флаги блокировки из calibrator.cpp
 extern bool is_window_fully_closed;
 extern bool is_window_fully_open;
@@ -79,14 +83,14 @@ void motor_tick() {
         }
     }
 
-    // --- 2. АВТОМАТИЧЕСКАЯ ЗАЩИТА ОТ ПОВТОРНОГО ПУСКА В УПОРЫ ---
+    // --- 2. АВТОМАТИЧЕСКАЯ ЗАЩИТА ОТ ПОВТОРНОГО ПУСКА В УПОРЫ ПО ПЛАВАЮЩЕЙ БАЗЕ ---
     if (target_motor_state == MAN_CLOSE && is_window_fully_closed) {
         target_motor_state = MAN_STOP;
-        Serial.println("[DRV] Блокировка пуска: окно уже полностью закрыто в раме!");
+        Serial.printf("[DRV] Блокировка пуска: окно уже находится в раме низа (%ld шагов)!\n", config_pos_closed);
     }
     if (target_motor_state == MAN_OPEN && is_window_fully_open) {
         target_motor_state = MAN_STOP;
-        Serial.println("[DRV] Блокировка пуска: окно уже полностью открыто до максимума!");
+        Serial.printf("[DRV] Блокировка пуска: окно уже находится в упоре верха (%ld шагов)!\n", config_pos_opened);
     }
 
     // --- 3. ЖЕСТКАЯ СИЛОВАЯ ОТСЕЧКА ПРИ СТОПЕ ---
@@ -96,14 +100,20 @@ void motor_tick() {
         digitalWrite(PIN_IN1_LOW, LOW);
         digitalWrite(PIN_IN2_LOW, LOW);
         
+        // Перехват перехода в состояние останова
         if (current_motor_state != MAN_STOP) {
             Serial.println("[DRV] Аппаратный PCNT-ШИМ: МОТОР ОСТАНОВЛЕН");
+            
             if (is_protect_triggered) {
                 calibrator_check_stop_event(current_motor_state);
                 is_protect_triggered = false; 
             } else {
                 Serial.println("[DRV] Ручной останов пользователем. Перезапись памяти заблокирована.");
+                
+                // Фиксируем текущую позицию во Flash без изменения крайних эталонов
+                calibrator_save_current_position();
             }
+            
             current_motor_state = MAN_STOP;
         }
         return;
@@ -117,8 +127,6 @@ void motor_tick() {
             is_reverse_paused = true;
             reverse_pause_timer = millis();
             
-            // ИСПРАВЛЕНИЕ: Гасим флаг старой аварии в самом начале паузы,
-            // чтобы выбег вала не вызвал ложное обнуление координат калибратором!
             is_protect_triggered = false; 
 
             ledcWrite(CH_IN1_HIGH, 0);

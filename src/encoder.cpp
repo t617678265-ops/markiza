@@ -6,6 +6,9 @@
 
 volatile long window_pulses = 0;
 
+// Внутренняя переменная для хранения фиксированного стартового смещения из Flash
+static long initial_offset = 0;
+
 void encoder_init() {
     pcnt_config_t pcnt_config = {};
     
@@ -31,7 +34,7 @@ void encoder_init() {
     pcnt_set_filter_value(PCNT_UNIT_0, 1000);
     pcnt_filter_enable(PCNT_UNIT_0);
 
-    // Сброс и запуск аппаратного счетчика
+    // Сброс и запуск аппаратного счетчика в чистый кремниевый ноль
     pcnt_counter_clear(PCNT_UNIT_0);
     pcnt_counter_resume(PCNT_UNIT_0);
     
@@ -51,5 +54,14 @@ void encoder_update_count() {
     int16_t pulse_val = 0;
     // Мгновенное чтение значения напрямую из аппаратного регистра PCNT
     pcnt_get_counter_value(PCNT_UNIT_0, &pulse_val);
-    window_pulses = pulse_val; // Обновляем глобальную переменную для вывода в лог и веб
+    
+    // Живая координата окна — это чистый аппаратный счет плюс фиксированный стартовый офсет
+    window_pulses = (long)pulse_val + initial_offset; 
+}
+
+void encoder_set_offset(long offset_val) {
+    initial_offset = offset_val;
+    window_pulses = offset_val; // Сразу выставляем стартовую позицию для первого вывода в логи
+    
+    Serial.printf("[PCNT] Стартовый офсет %ld шагов успешно применен к аппаратному регистру.\n", initial_offset);
 }

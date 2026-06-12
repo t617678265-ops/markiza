@@ -3,8 +3,9 @@
 #include <Preferences.h>
 #include "motor.h"
 
-// Глобальные переменные, доступные для слайдера и пресетов в main.cpp и web_server.cpp
-extern long max_window_steps; // Полная длина хода окна в шагах энкодера
+// Новые глобальные координаты краев (доступны для слайдера в web_server.cpp и main.cpp)
+extern long config_pos_closed; // Обученная координата закрытого окна (0%)
+extern long config_pos_opened; // Обученная координата открытого окна (100%)
 
 // Глобальные флаги блокировки пуска в физические упоры рамы
 extern bool is_window_fully_closed;
@@ -27,3 +28,9 @@ void calibrator_check_stop_event(MotorControlState last_moving_state);
  *        Вызывается каждую 1 мс внутри задачи ядра физики WindowPhysicsCoreCode.
  */
 void calibrator_update_flags();
+
+/**
+ * @brief Бережное сохранение текущей координаты window_pulses во Flash-память.
+ *        Вызывается в motor.cpp при абсолютно любом физическом останове вала.
+ */
+void calibrator_save_current_position();
