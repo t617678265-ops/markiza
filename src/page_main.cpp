@@ -3,12 +3,11 @@
 String get_page_main(int percent, String status_text) {
     String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
     html += "<meta name='viewport' content='width=device-width, initial-scale=1.0, user-scalable=no'>";
-    
     html += "<style>";
     html += "body{background-color:#22252a;color:#e2e5e9;font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;padding:20px;box-sizing:border-box;}";
     html += ".card{background-color:#2d3139;padding:25px;border-radius:16px;box-shadow:0 6px 20px rgba(0,0,0,0.4);width:100%;max-width:400px;text-align:center;}";
     html += "h2{color:#b0c4de;margin:0 0 5px 0;}";
-    html += ".status-val{font-size:32px;font-weight:bold;color:#fff;margin:10px 0 20px 0;}"; // Увеличен нижний отступ вместо удаленной строки
+    html += ".status-val{font-size:32px;font-weight:bold;color:#fff;margin:10px 0 20px 0;}"; 
     html += ".window-svg{background:#1e2127;border-radius:8px;margin-bottom:20px;border:1px solid #3d424d;}";
     html += ".window-frame{stroke:#3d424d;stroke-width:4;fill:none;}";
     html += ".window-sash{stroke:#7f9cc4;stroke-width:4;fill:none;transform-origin:140px 30px;transition:transform 0.5s ease;}";
@@ -19,10 +18,7 @@ String get_page_main(int percent, String status_text) {
     html += ".btn-stop{background-color:#c47f7f;color:#22252a;}";
     html += ".btn-auto-open{background-color:#7fc49c;color:#22252a;}";
     html += ".slider-title{text-align:left;font-size:14px;color:#a0a5af;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;}";
-    
-    // ФИНАЛЬНОЕ УВЕЛИЧЕНИЕ ШРИФТА ПОДСКАЗКИ СЛАЙДЕРА ДО 22PX
     html += ".slider-val-hint{color:#7f9cc4;font-weight:bold;font-size:22px;}"; 
-    
     html += ".slider{width:100%;-webkit-appearance:none;height:8px;border-radius:4px;background:#1e2127;outline:none;margin-bottom:30px;}";
     html += ".slider::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:#7f9cc4;cursor:pointer;}";
     html += ".memory-title{text-align:left;font-size:14px;color:#a0a5af;margin-bottom:8px;}";
@@ -40,8 +36,8 @@ String get_page_main(int percent, String status_text) {
     html += "function updateStatus() {";
     html += "  fetch('/status').then(res => res.text()).then(data => {";
     html += "    var arr = data.split(',');";
-    html += "    var sliderTarget = parseInt(arr);";
-    html += "    currentPercent = parseInt(arr);";
+    html += "    var sliderTarget = parseInt(arr[0]);";
+    html += "    currentPercent = parseInt(arr[1]);"; // ИСПРАВЛЕНО: Теперь анимация жёстко читает реальный ход привода!
     
     html += "    document.getElementById('v').innerText = currentPercent + '%';";
     
@@ -54,7 +50,7 @@ String get_page_main(int percent, String status_text) {
     html += "    document.getElementById('w').style.transform = 'rotate(' + angle + 'deg)';";
     
     html += "    for(var i=1; i<=6; i++) {";
-    html += "      var mVal = parseInt(arr[2+i]);";
+    html += "      var mVal = parseInt(arr[2+i]);"; 
     html += "      var b = document.getElementById('m'+i);";
     html += "      if(mVal >= 0 && mVal <= 100) { b.innerText = mVal + '%'; b.style.borderColor = '#7f9cc4'; }";
     html += "      else { b.innerText = 'M' + i; b.style.borderColor = '#3d424d'; }";
@@ -75,7 +71,7 @@ String get_page_main(int percent, String status_text) {
     html += "    fetch('/mem_save?id=' + id + '&pos=' + document.getElementById('s').value).then(() => {"; 
     html += "      setTimeout(() => { b.style.backgroundColor = '#1e2127'; b.style.color = '#b0c4de'; updateStatus(); }, 500);";
     html += "    });";
-    html += "  }, 400);"; // Точный отклик в 400 мс строго под вибрацию телефона
+    html += "  }, 400);"; 
     html += "}";
     
     html += "function endMem(id) {";
@@ -102,7 +98,7 @@ String get_page_main(int percent, String status_text) {
     html += "    <button class='btn btn-auto-close' onclick=\"fetch('/close'); setTimeout(updateStatus, 100);\">Авт. Закр.</button>";
     html += "    <button class='btn btn-stop' onclick=\"fetch('/stop'); setTimeout(updateStatus, 100);\">СТОП</button>";
     html += "    <button class='btn btn-auto-open' onclick=\"fetch('/open'); setTimeout(updateStatus, 100);\">Авт. Откр.</button>";
-    html += "  </div>"; // Лишний ряд ручных кнопок полностью удален
+    html += "  </div>"; 
     html += "</div>";
 
     html += "<div class='slider-title'>Выставить положение: <span class='slider-val-hint' id='sl-hint'>" + String(percent) + "%</span></div>";
