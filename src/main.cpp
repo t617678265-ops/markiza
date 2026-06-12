@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <EEPROM.h>      // Подключаем для очистки памяти Wi-Fi при сбросе кнопки
 #include "wifi_config.h" 
 #include "web_server.h"  
 #include "motor.h"       
@@ -53,6 +54,9 @@ void setup() {
     encoder_init(); 
     current_init(); 
 
+    // Настройка физической кнопки сброса Wi-Fi на свободный пин GPIO 22
+    pinMode(22, INPUT_PULLUP);
+
     // Считываем сохраненный эталон длины окна из Flash-памяти Preferences
     calibrator_init();
 
@@ -77,5 +81,36 @@ void setup() {
 void loop() {
     // Ядро 0 полностью обрабатывает только сетевые обновления веб-сервера
     web_server_update(); 
+
+    // --- НЕБЛОКИРУЮЩИЙ ОПРОС ФИЗИЧЕСКОЙ КНОПКИ СБРОСА WI-FI НА GPIO 22 ---
+    static unsigned long button_press_start = 0;
+    static bool is_pressed = false;
+
+    if (digitalRead(22) == LOW) { // Кнопка притянута к минусу (зажата)
+        if (!is_pressed) {
+            button_press_start = millis();
+            is_pressed = true;
+            Serial.println("[BUTTON] Обнаружено нажатие кнопки сброса. Начинаю отсчет 5 секунд...");
+        }
+        
+        // Защита от случайного клика: проверяем удержание ровно 5000 мс
+        if (millis() - button_press_start >= 5000) {
+            Serial.println("[BUTTON] Кнопка удержана 5 секунд! Очищаю память Wi-Fi и перезагружаюсь...");
+            
+            EEPROM.begin(512);
+            EEPROM.write(0, 0xFF); // Стираем маркер валидности сети, как в роутере
+            EEPROM.commit();
+            
+            delay(1000);
+            ESP.restart(); // Жесткий рестарт платы
+        }
+    } 
+    else { // Кнопка отпущена
+        if (is_pressed) {
+            Serial.println("[BUTTON] Кнопка отпущена раньше времени. Сброс таймера.");
+            is_pressed = false;
+        }
+    }
+
     yield();
 }
