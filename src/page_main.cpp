@@ -37,7 +37,7 @@ String get_page_main(int percent, String status_text) {
     html += "  fetch('/status').then(res => res.text()).then(data => {";
     html += "    var arr = data.split(',');";
     html += "    var sliderTarget = parseInt(arr[0]);";
-    html += "    currentPercent = parseInt(arr[1]);"; // ИСПРАВЛЕНО: Теперь анимация жёстко читает реальный ход привода!
+    html += "    currentPercent = parseInt(arr[1]);";
     
     html += "    document.getElementById('v').innerText = currentPercent + '%';";
     
@@ -68,7 +68,8 @@ String get_page_main(int percent, String status_text) {
     html += "    isLongTouch = true;";
     html += "    var b = document.getElementById('m'+id);";
     html += "    b.style.backgroundColor = '#7fc49c'; b.style.color = '#22252a';";
-    html += "    fetch('/mem_save?id=' + id + '&pos=' + document.getElementById('s').value).then(() => {"; 
+    // ИСПРАВЛЕНО: Вместо значения слайдера шлем на сервер честный, реальный процент окна currentPercent!
+    html += "    fetch('/mem_save?id=' + id + '&pos=' + currentPercent).then(() => {"; 
     html += "      setTimeout(() => { b.style.backgroundColor = '#1e2127'; b.style.color = '#b0c4de'; updateStatus(); }, 500);";
     html += "    });";
     html += "  }, 400);"; 
