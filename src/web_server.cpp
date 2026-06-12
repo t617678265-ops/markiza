@@ -10,10 +10,17 @@
 #include <Update.h>
 #include <ESPAsyncWebServer.h>
 #include <EEPROM.h>
+#include <Preferences.h> // ИНТЕГРАЦИЯ: Энергонезависимая память для параметров железа
 
 AsyncWebServer server(80);
+Preferences hw_prefs; // Объект памяти для конфигурации привода
 
-// РАЗДЕЛЕНИЕ ПЕРЕМЕННЫХ: 
+// ГЛОБАЛЬНЫЕ НАСТРОЙКИ ЖЕЛЕЗА ДЛЯ МОДУЛЕЙ MOTOR И PROTECTION
+int config_pwm_speed = 128;         // Скорость ШИМ (20% - 90%, по умолчанию 128)
+float config_protection_sens = 5.0f; // Коэффициент чувствительности адаптивной защиты
+int config_abs_stop_adc = 1500;     // Предел аварийной остановки по току АЦП
+
+// РАЗДЕЛЕНИЕ ПЕРЕМЕННЫХ ИНТЕРФЕЙСА
 int slider_target_percent = 45; // Уставка ползунка (орган ввода, стоит на месте)
 int window_percent = 45;        // Реальный ход створки (анимация на экране)
 
@@ -32,6 +39,13 @@ extern long config_pos_opened;
 void web_server_init()
 {
     EEPROM.begin(512);
+
+    // --- ЧТЕНИЕ И ИНИЦИАЛИЗАЦИЯ ЗАВОДСКИХ НАСТРОЕК ЖЕЛЕЗА ИЗ FLASH ---
+    hw_prefs.begin("hw_cfg", false);
+    config_pwm_speed = hw_prefs.getInt("pwm", 128);
+    config_protection_sens = hw_prefs.getFloat("sens", 5.0f);
+    config_abs_stop_adc = hw_prefs.getInt("stop", 1500);
+    hw_prefs.end();
 
     for (int i = 0; i < 6; i++)
     {
@@ -74,7 +88,7 @@ void web_server_init()
         }
         request->send(200, "text/plain", data); });
 
-    server.on("/mem_save", HTTP_GET, [](AsyncWebServerRequest *request)
+        server.on("/mem_save", HTTP_GET, [](AsyncWebServerRequest *request)
               {
         if (request->hasParam("id") && request->hasParam("pos")) {
             int id = request->getParam("id")->value().toInt() - 1; 
@@ -88,53 +102,79 @@ void web_server_init()
         }
         request->send(200, "text/plain", "OK"); });
 
-            server.on("/mem_go", HTTP_GET, [](AsyncWebServerRequest *request)
+    server.on("/mem_go", HTTP_GET, [](AsyncWebServerRequest *request)
               {
         if (request->hasParam("id")) {
             int id = request->getParam("id")->value().toInt() - 1;
             if (id >= 0 && id < 6) {
                 int target_pos = mem_positions[id];
                 if (target_pos >= 0 && target_pos <= 100) {
-                    slider_target_percent = target_pos; // Фиксируем уставку бегунка
+                    slider_target_percent = target_pos; 
                     
-                    // ЗОЛОТОЙ СТАНДАРТ АВТОМАТИКИ ДЛЯ ПРЕСЕТОВ ПАМЯТИ
                     if (target_pos == 0) {
                         motor_status_text = "Закрытие...";
                         encoder_set_direction(-1);
-                        target_motor_state = MAN_CLOSE; // Валим до силового упора рамы низа!
-                        Serial.printf("[MOTOR] Пресет M%d (0%%): Запущен силовой дожим до упора вниз\n", id + 1);
+                        target_motor_state = MAN_CLOSE; 
                     } 
                     else if (target_pos == 100) {
                         motor_status_text = "Открытие...";
                         encoder_set_direction(1);
-                        target_motor_state = MAN_OPEN;  // Валим до силового упора верха!
-                        Serial.printf("[MOTOR] Пресет M%d (100%%): Запущен силовой накат до упора вверх\n", id + 1);
+                        target_motor_state = MAN_OPEN;  
                     } 
                     else {
-                        // Для всех промежуточных положений (1-99%) оставляем координатное ведение
                         motor_status_text = "Переход...";
                         long total_steps = config_pos_opened - config_pos_closed;
                         motor_target_steps = config_pos_closed + (total_steps * target_pos) / 100;
                         target_motor_state = GOTO_POSITION;
-                        Serial.printf("[MOTOR] Едем к сохраненному пресету M%d в положение %d%% (Цель: %ld шагов)\n", 
-                                      id + 1, target_pos, motor_target_steps);
                     }
                 }
             }
         }
         request->send(200, "text/plain", "OK"); });
 
+    // ИСПРАВЛЕНО: Передаем на страницу настроек текущие живые значения ШИМ, защиты и АЦП
     server.on("/setting", HTTP_GET, [](AsyncWebServerRequest *request)
               {
         String current_ip = WiFi.localIP().toString();
-        request->send(200, "text/html", get_page_setting(current_ip)); });
+        request->send(200, "text/html", get_page_setting(current_ip, config_pwm_speed, config_protection_sens, config_abs_stop_adc)); });
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // ОБРАБОТЧИКИ СЕТИ: РУЧНЫЕ КНОПКИ САЙТА НАПРЯМУЮ УПРАВЛЯЮТ СИЛОВЫМ ЯДРОМ
-    // ─────────────────────────────────────────────────────────────────────────
+    // МАРШРУТ СОХРАНЕНИЯ НАСТРОЕК ЖЕЛЕЗА ИЗ HTML-ФОРМЫ В ПАМЯТЬ PREFERENCES
+    server.on("/save_hardware_config", HTTP_GET, [](AsyncWebServerRequest *request)
+              {
+        if (request->hasParam("pwm") && request->hasParam("sens") && request->hasParam("stop_adc")) {
+            config_pwm_speed = request->getParam("pwm")->value().toInt();
+            config_protection_sens = request->getParam("sens")->value().toFloat();
+            config_abs_stop_adc = request->getParam("stop_adc")->value().toInt();
+
+            Preferences prefs;
+            prefs.begin("hw_cfg", false);
+            prefs.putInt("pwm", config_pwm_speed);
+            prefs.putFloat("sens", config_protection_sens);
+            prefs.putInt("stop", config_abs_stop_adc);
+            prefs.end();
+            Serial.printf("[CONFIG] Настройки сохранены во Flash! ШИМ: %d, Защита: %.1f, АЦП: %d\n", config_pwm_speed, config_protection_sens, config_abs_stop_adc);
+        }
+        request->redirect("/setting"); });
+
+    // МАРШРУТ СБРОСА КОНФИГУРАЦИИ НА НАЧАЛЬНЫЕ ЗАВОДСКИЕ ЗНАЧЕНИЯ ИЗ КОДА
+    server.on("/reset_hardware_default", HTTP_GET, [](AsyncWebServerRequest *request)
+              {
+        config_pwm_speed = 128;
+        config_protection_sens = 5.0f;
+        config_abs_stop_adc = 1500;
+
+        Preferences prefs;
+        prefs.begin("hw_cfg", false);
+        prefs.putInt("pwm", 128);
+        prefs.putFloat("sens", 5.0f);
+        prefs.putInt("stop", 1500);
+        prefs.end();
+        Serial.println("[CONFIG] Настройки сброшены на заводские дефолты!");
+        request->redirect("/setting"); });
+
     server.on("/open", HTTP_GET, [](AsyncWebServerRequest *request)
               {
-        slider_target_percent = 100; // Синхронизируем уставку
+        slider_target_percent = 100; 
         motor_status_text = "Открытие...";
         encoder_set_direction(1); 
         target_motor_state = MAN_OPEN; 
@@ -142,7 +182,7 @@ void web_server_init()
 
     server.on("/close", HTTP_GET, [](AsyncWebServerRequest *request)
               {
-        slider_target_percent = 0; // Синхронизируем уставку
+        slider_target_percent = 0; 
         motor_status_text = "Закрытие...";
         encoder_set_direction(-1); 
         target_motor_state = MAN_CLOSE; 
@@ -153,7 +193,6 @@ void web_server_init()
         motor_status_text = "Остановлено";
         target_motor_state = MAN_STOP; 
         request->send(200, "text/plain", "OK"); });
-    // ─────────────────────────────────────────────────────────────────────────
 
     server.on("/set", HTTP_GET, [](AsyncWebServerRequest *request)
               {
@@ -161,28 +200,23 @@ void web_server_init()
             String val = request->getParam("pos")->value();
             int target_pos = val.toInt();
             if (target_pos >= 0 && target_pos <= 100) {
-                slider_target_percent = target_pos; // Фиксируем уставку, ползунок замирает!
+                slider_target_percent = target_pos; 
                 
-                // ЗОЛОТОЙ СТАНДАРТ АВТОМАТИКИ ДЛЯ ПОЛЗУНКА СЛАЙДЕРА
                 if (target_pos == 0) {
                     motor_status_text = "Закрытие...";
                     encoder_set_direction(-1);
-                    target_motor_state = MAN_CLOSE; // Вместо GOTO_POSITION валим до упора вниз!
-                    Serial.println("[MOTOR] Слайдер переведен в 0%. Запущен силовой дожим в раму.");
+                    target_motor_state = MAN_CLOSE; 
                 } 
                 else if (target_pos == 100) {
                     motor_status_text = "Открытие...";
                     encoder_set_direction(1);
-                    target_motor_state = MAN_OPEN;  // Вместо GOTO_POSITION валим до упора вверх!
-                    Serial.println("[MOTOR] Слайдер переведен в 100%. Запущен силовой накат вверх.");
+                    target_motor_state = MAN_OPEN;  
                 } 
                 else {
-                    // Для всех промежуточных положений (1-99%) оставляем координатное ведение
                     motor_status_text = "Переход...";
                     long total_steps = config_pos_opened - config_pos_closed;
                     motor_target_steps = config_pos_closed + (total_steps * target_pos) / 100;
                     target_motor_state = GOTO_POSITION;
-                    Serial.printf("[MOTOR] Положение изменено слайдером на: %d%% (Цель: %ld шагов)\n", target_pos, motor_target_steps);
                 }
             }
         }
@@ -222,6 +256,4 @@ void web_server_init()
     Serial.println("[SERVER] Основной асинхронный веб-сервер запущен!");
 }
 
-void web_server_update()
-{
-}
+void web_server_update() {}

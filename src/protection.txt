@@ -3,9 +3,10 @@
 #include "current.h"
 #include "motor.h" // Подключаем для доступа к режимам мотора и slider_direction
 
-// ИНТЕГРАЦИЯ: Аккуратно импортируем живые общие переменные защиты из web_server.cpp
-extern float config_protection_sens;
-extern int config_abs_stop_adc;
+// Глобальные переменные коэффициентов перегрузки (доступны для настройки из web_server.cpp)
+float config_factor_open = 5.0f;   // Во сколько раз ток может превысить норму при открытии (вверх)
+float config_factor_close = 5.0f;  // Во сколько раз ток может превысить норму при закрытии (вниз)
+int config_abs_max_limit = 1500;   // Жесткий абсолютный потолок для удара в раму (второй рубеж защиты)
 
 // Глобальный флаг фиксации физического упора для модуля motor.cpp
 bool is_protect_triggered = false;
@@ -72,16 +73,18 @@ void protection_tick() {
         Serial.println("[ALARM] КРИТИЧЕСКАЯ ОШИБКА: ПРЕВЫШЕН ТАЙМ-АУТ ХОДА (2 МИН)!");
         return;
     }
+
     // --- 3. ПОЛУЧЕНИЕ ОТФИЛЬТРОВАННОГО ТОКА ШУНТА ---
     int current_adc_current = current_get_raw();
 
-    // --- 4. РУБЕЖ ЗАЩИТЫ №2: ЖЕСТКИЙ АБСОЛЮТНЫЙ ПОТОЛОК ИЗ ВЕБ-ИНТЕРФЕЙСА ---
-    if (current_adc_current > config_abs_stop_adc) {
+        // --- 4. РУБЕЖ ЗАЩИТЫ №2: ЖЕСТКИЙ АБСОЛЮТНЫЙ ПОТОЛОК (1500) ---
+    // Подстраховывает систему непрерывно с 1-й мс, отсекая жесткий удар в раму
+    if (current_adc_current > config_abs_max_limit) {
         is_protect_triggered = true;
         target_motor_state = MAN_STOP;
         last_motor_state = MAN_STOP;
         Serial.printf("[PROTECT] ДВУХУРОВНЕВЫЙ СТОП! Превышен абсолютный предел тока: %d | Порог: %d\n", 
-                      current_adc_current, config_abs_stop_adc);
+                      current_adc_current, config_abs_max_limit);
         return;
     }
 
@@ -92,18 +95,24 @@ void protection_tick() {
             speed_calc_timer = millis();
             Serial.println("[PROTECT] Слепая зона пуска завершена. Начался сбор адаптивного массива.");
         } else {
-            return; // Внутри слепой зоны динамические пороги не считаем
+            return; // Внутри 100 мс динамические пороги не считаем, работает только жесткий предел 1500
         }
     }
 
     // --- 6. АДАПТИВНЫЙ АВТОСТОП С РАСЧЕТОМ СРЕДНЕГО ПО СТАРЫМ 2/3 МАССИВА ---
+    // Опрашиваем датчик и обновляем базу строго раз в 50 миллисекунд (20 раз в секунду)
     if (millis() - speed_calc_timer >= 50) {
         speed_calc_timer = millis();
 
         // Динамически выбираем коэффициент с учетом автоматического режима слайдера GOTO_POSITION
-        float active_factor = config_protection_sens; // Общий живой коэффициент с сайта
+        float active_factor = config_factor_close; // По умолчанию вниз
+        if (target_motor_state == GOTO_POSITION) {
+            if (slider_direction == 1) active_factor = config_factor_open;
+        } else {
+            if (target_motor_state == MAN_OPEN) active_factor = config_factor_open;
+        }
 
-        // Если массив еще пустой — просто инициализируем первую ячейку
+        // Если массив еще пустой (самый первый шаг после слепой зоны) — просто инициализируем первую ячейку
         if (history_count == 0) {
             current_history[0] = current_adc_current;
             history_count = 1;
@@ -113,6 +122,7 @@ void protection_tick() {
         // Вычисляем индекс отсечки, равный ровно двум третям (2/3) от текущего размера массива
         int cut_off_index = (history_count * 2) / 3;
         
+        // Защитный фиксатор: если массив еще слишком мал (меньше 3 элементов), берем для расчета первый индекс
         if (cut_off_index == 0) {
             cut_off_index = 1;
         }
@@ -129,6 +139,7 @@ void protection_tick() {
 
         // Сравниваем текущее мгновенное значение с чистой исторической базой
         if ((float)current_adc_current > dynamic_threshold) {
+            // АНОМАЛИЯ (ВЫБРОС)! Ток резко улетел вверх в N раз относительно старых 2/3 пути.
             is_protect_triggered = true;
             target_motor_state = MAN_STOP;
             last_motor_state = MAN_STOP;
