@@ -34,6 +34,9 @@ static MotorControlState current_motor_state = MAN_STOP;
 static unsigned long reverse_pause_timer = 0;
 static bool is_reverse_paused = false;
 
+// Внутренний маркер направления движения ИМЕННО для режима слайдера
+ int slider_direction = 0; // 0 - стоп, 1 - едем вверх, -1 - едем вниз
+
 void motor_init() {
     // Настройка нижних ключей
     pinMode(PIN_IN1_LOW, OUTPUT);
@@ -58,7 +61,7 @@ void motor_tick() {
 
     // --- 1. ОБРАБОТКА НЕБЛОКИРУЮЩЕЙ ПАУЗЫ БЕЗОПАСНОГО РЕВЕРСА (1000 мс) ---
     if (is_reverse_paused) {
-        // Удерживаем ключи в жестком силовом нуле во время паузы
+        // Удерживаем ключи в жестком силовом книге во время паузы
         ledcWrite(CH_IN1_HIGH, 0);
         ledcWrite(CH_IN2_HIGH, 0);
         digitalWrite(PIN_IN1_LOW, LOW);
@@ -70,11 +73,13 @@ void motor_tick() {
             // Сбрасываем фильтры пускового тока для нового направления
             protection_init();
             
-            // Переключаем кремний PCNT на новое направление строго ПОСЛЕ полной остановки вала!
-            if (target_motor_state == MAN_OPEN) {
-                encoder_set_direction(1);
-            } else if (target_motor_state == MAN_CLOSE) {
-                encoder_set_direction(-1);
+            // Направление для слайдера или ручного режима задается здесь
+            if (target_motor_state == GOTO_POSITION) {
+                if (slider_direction == 1) encoder_set_direction(1);
+                else if (slider_direction == -1) encoder_set_direction(-1);
+            } else {
+                if (target_motor_state == MAN_OPEN) encoder_set_direction(1);
+                else if (target_motor_state == MAN_CLOSE) encoder_set_direction(-1);
             }
             
             Serial.println("[DRV] Пауза реверса завершена. Вал замер. Направление PCNT обновлено.");
@@ -83,7 +88,85 @@ void motor_tick() {
         }
     }
 
-    // --- 2. АВТОМАТИЧЕСКАЯ ЗАЩИТА ОТ ПОВТОРНОГО ПУСКА В УПОРЫ ПО ПЛАВАЮЩЕЙ БАЗЕ ---
+    // --- 2. АВТОМАТИЧЕСКОЕ КООРДИНАТНОЕ ВЕДЕНИЕ ОКНА ПО СЛАЙДЕРУ (GOTO_POSITION) ---
+    if (target_motor_state == GOTO_POSITION) {
+        // Защитный коридор упреждения останова в 10 шагов для гашения инерции редуктора
+        if (abs(window_pulses - motor_target_steps) <= 10) {
+            // Цель достигнута, полностью обесточиваем мост
+            ledcWrite(CH_IN1_HIGH, 0);
+            ledcWrite(CH_IN2_HIGH, 0);
+            digitalWrite(PIN_IN1_LOW, LOW);
+            digitalWrite(PIN_IN2_LOW, LOW);
+            
+            slider_direction = 0;
+            current_motor_state = MAN_STOP;
+            target_motor_state = MAN_STOP;
+            
+            Serial.printf("[DRV] Целевая координата слайдера достигнута: %ld (Цель: %ld). Остановка.\n", 
+                          window_pulses, motor_target_steps);
+            
+            // Фиксируем финальную точку в EEPROM
+            calibrator_save_current_position();
+            return;
+        } 
+        
+        // Окно ниже цели — нужно ехать ВВЕРХ
+        if (window_pulses < motor_target_steps) {
+            if (slider_direction != 1 && !is_reverse_paused) {
+                if (slider_direction == -1 || current_motor_state == MAN_CLOSE) {
+                    is_reverse_paused = true;
+                    reverse_pause_timer = millis();
+                    is_protect_triggered = false;
+                    slider_direction = 1; 
+                    current_motor_state = MAN_STOP;
+                    Serial.println("[DRV] Слайдер запросил реверс движения ВВЕРХ. Включаю паузу 1 сек...");
+                    return;
+                }
+                
+                // ВАЖНОЕ ИСПРАВЛЕНИЕ: взводим 100 мс слепой зоны для слайдера перед стартом!
+                protection_init();
+                
+                encoder_set_direction(1);
+                digitalWrite(PIN_IN1_LOW, LOW);
+                digitalWrite(PIN_IN2_LOW, HIGH);
+                ledcWrite(CH_IN2_HIGH, 0);
+                ledcWrite(CH_IN1_HIGH, 128); // 50% мощности
+                
+                slider_direction = 1;
+                current_motor_state = GOTO_POSITION; 
+                Serial.printf("[DRV] Авто-слайдер: старт движения ВВЕРХ к %ld шагам\n", motor_target_steps);
+            }
+        } 
+        // Окно выше цели — нужно ехать ВНИЗ
+        else if (window_pulses > motor_target_steps) {
+            if (slider_direction != -1 && !is_reverse_paused) {
+                if (slider_direction == 1 || current_motor_state == MAN_OPEN) {
+                    is_reverse_paused = true;
+                    reverse_pause_timer = millis();
+                    is_protect_triggered = false;
+                    slider_direction = -1; 
+                    current_motor_state = MAN_STOP;
+                    Serial.println("[DRV] Слайдер запросил реверс движения ВНИЗ. Включаю паузу 1 сек...");
+                    return;
+                }
+                
+                // ВАЖНОЕ ИСПРАВЛЕНИЕ: взводим 100 мс слепой зоны для слайдера перед стартом!
+                protection_init();
+                
+                encoder_set_direction(-1);
+                digitalWrite(PIN_IN2_LOW, LOW);
+                digitalWrite(PIN_IN1_LOW, HIGH);
+                ledcWrite(CH_IN1_HIGH, 0);
+                ledcWrite(CH_IN2_HIGH, 128); // 50% мощности
+                
+                slider_direction = -1;
+                current_motor_state = GOTO_POSITION; 
+                Serial.printf("[DRV] Авто-слайдер: старт движения ВНИЗ к %ld шагам\n", motor_target_steps);
+            }
+        }
+        return; 
+    }
+     // --- 3. АВТОМАТИЧЕСКАЯ ЗАЩИТА ОТ ПОВТОРНОГО ПУСКА В УПОРЫ ПО ПЛАВАЮЩЕЙ БАЗЕ ---
     if (target_motor_state == MAN_CLOSE && is_window_fully_closed) {
         target_motor_state = MAN_STOP;
         Serial.printf("[DRV] Блокировка пуска: окно уже находится в раме низа (%ld шагов)!\n", config_pos_closed);
@@ -93,12 +176,14 @@ void motor_tick() {
         Serial.printf("[DRV] Блокировка пуска: окно уже находится в упоре верха (%ld шагов)!\n", config_pos_opened);
     }
 
-    // --- 3. ЖЕСТКАЯ СИЛОВАЯ ОТСЕЧКА ПРИ СТОПЕ ---
+    // --- 4. ЖЕСТКАЯ СИЛОВАЯ ОТСЕЧКА ПРИ РУЧНОМ ИЛИ АВАРИЙНОМ СТОПЕ ---
     if (target_motor_state == MAN_STOP) {
         ledcWrite(CH_IN1_HIGH, 0);
         ledcWrite(CH_IN2_HIGH, 0);
         digitalWrite(PIN_IN1_LOW, LOW);
         digitalWrite(PIN_IN2_LOW, LOW);
+        
+        slider_direction = 0; // Очищаем маркер слайдера при любом стопе
         
         // Перехват перехода в состояние останова
         if (current_motor_state != MAN_STOP) {
@@ -108,9 +193,7 @@ void motor_tick() {
                 calibrator_check_stop_event(current_motor_state);
                 is_protect_triggered = false; 
             } else {
-                Serial.println("[DRV] Ручной останов пользователем. Перезапись памяти заблокирована.");
-                
-                // Фиксируем текущую позицию во Flash без изменения крайних эталонов
+                Serial.println("[DRV] Ручной останов пользователем с сайта. Сохранение позиции...");
                 calibrator_save_current_position();
             }
             
@@ -119,10 +202,10 @@ void motor_tick() {
         return;
     }
 
-    // --- 4. ОБРАБОТКА ЗАПУСКА ДВИЖЕНИЯ ПРИ СМЕНЕ РЕЖИМОВ ---
+    // --- 5. ОБРАБОТКА ЗАПУСКА РУЧНОГО ДВИЖЕНИЯ ПРИ СМЕНЕ РЕЖИМОВ (ОТ КНОПОК) ---
     if (target_motor_state != current_motor_state) {
 
-        // ДЕТЕКЦИЯ ПРЯМОГО РЕВЕРСА НА ЛЕТУ
+        // ДЕТЕКЦИЯ ПРЯМОГО РЕВЕРСА НА ЛЕТУ ПРИ НАЖАТИИ РУЧНЫХ КНОПОК С САЙТА
         if (current_motor_state != MAN_STOP && target_motor_state != MAN_STOP) {
             is_reverse_paused = true;
             reverse_pause_timer = millis();
@@ -135,11 +218,11 @@ void motor_tick() {
             digitalWrite(PIN_IN2_LOW, LOW);
             
             current_motor_state = MAN_STOP; 
-            Serial.println("[DRV] ВНИМАНИЕ: Обнаружен реверс на лету! Логика PCNT заморожена на время выбега ротора...");
+            Serial.println("[DRV] ВНИМАНИЕ: Обнаружен ручной реверс на лету! Логика PCNT заморожена на время выбега ротора...");
             return;
         }
 
-        // Чистый старт из глубокого стопа
+        // Чистый старт из глубокого стопа от ручных кнопок
         ledcWrite(CH_IN1_HIGH, 0);
         ledcWrite(CH_IN2_HIGH, 0);
         digitalWrite(PIN_IN1_LOW, LOW);

@@ -1,6 +1,7 @@
 #include "protection.h"
 #include "encoder.h"
 #include "current.h"
+#include "motor.h" // Подключаем для доступа к режимам мотора и slider_direction
 
 // Глобальные переменные коэффициентов перегрузки (доступны для настройки из web_server.cpp)
 float config_factor_open = 5.0f;   // Во сколько раз ток может превысить норму при открытии (вверх)
@@ -23,6 +24,9 @@ static bool in_blanking = false;               // Флаг активного п
 
 // Локальный трекер состояния для отслеживания момента старта мотора
 static MotorControlState last_motor_state = MAN_STOP;
+
+// Импортируем из motor.cpp маркер реального направления автоматического слайдера
+extern int slider_direction;
 
 void protection_init() {
     speed_calc_timer = millis();
@@ -47,16 +51,18 @@ void protection_tick() {
         return;
     }
 
-    // --- 1. ДЕТЕКЦИЯ МОМЕНТА СТАРТА ДВИЖЕНИЯ ---
-    if (last_motor_state == MAN_STOP && (target_motor_state == MAN_OPEN || target_motor_state == MAN_CLOSE)) {
+    // --- 1. ДЕТЕКЦИЯ МОМЕНТА СТАРТА ДВИЖЕНИЯ (РУЧНОГО ИЛИ ПО СЛАЙДЕРУ) ---
+    if (last_motor_state == MAN_STOP && 
+       (target_motor_state == MAN_OPEN || target_motor_state == MAN_CLOSE || target_motor_state == GOTO_POSITION)) {
+        
         start_blanking_timer = millis();
-        motor_run_start_timer = millis(); // Фиксируем время начала непрерывного движения
+        motor_run_start_timer = millis(); // Фиксируем честное время старта!
         speed_calc_timer = millis();
-        in_blanking = true;            // Включаем слепую зону пуска
-        history_count = 0;             // Полностью обнуляем накопительный массив для нового прохода
-        is_protect_triggered = false;  // Сбрасываем флаг защиты при новом старте
+        in_blanking = true;            // Включаем 100 мс слепой зоны
+        history_count = 0;             // Сбрасываем старый массив
+        is_protect_triggered = false;  
         last_motor_state = target_motor_state;
-        Serial.println("[PROTECT] Мотор запущен. Накопительный массив очищен. Слепая зона 100 мс...");
+        Serial.println("[PROTECT] Мотор запущен. Таймер редуктора инициализирован. Слепая зона 100 мс...");
     }
 
     // --- 2. КРИТИЧЕСКАЯ ЗАЩИТА РЕДУКТОРА ПО ТАЙМ-АУТУ ХОДА (2 МИНУТЫ) ---
@@ -71,7 +77,7 @@ void protection_tick() {
     // --- 3. ПОЛУЧЕНИЕ ОТФИЛЬТРОВАННОГО ТОКА ШУНТА ---
     int current_adc_current = current_get_raw();
 
-    // --- 4. РУБЕЖ ЗАЩИТЫ №2: ЖЕСТКИЙ АБСОЛЮТНЫЙ ПОТОЛОК (1500) ---
+        // --- 4. РУБЕЖ ЗАЩИТЫ №2: ЖЕСТКИЙ АБСОЛЮТНЫЙ ПОТОЛОК (1500) ---
     // Подстраховывает систему непрерывно с 1-й мс, отсекая жесткий удар в раму
     if (current_adc_current > config_abs_max_limit) {
         is_protect_triggered = true;
@@ -98,8 +104,13 @@ void protection_tick() {
     if (millis() - speed_calc_timer >= 50) {
         speed_calc_timer = millis();
 
-        // Выбираем нужный коэффициент в зависимости от направления движения мансардного окна
-        float active_factor = (target_motor_state == MAN_OPEN) ? config_factor_open : config_factor_close;
+        // Динамически выбираем коэффициент с учетом автоматического режима слайдера GOTO_POSITION
+        float active_factor = config_factor_close; // По умолчанию вниз
+        if (target_motor_state == GOTO_POSITION) {
+            if (slider_direction == 1) active_factor = config_factor_open;
+        } else {
+            if (target_motor_state == MAN_OPEN) active_factor = config_factor_open;
+        }
 
         // Если массив еще пустой (самый первый шаг после слепой зоны) — просто инициализируем первую ячейку
         if (history_count == 0) {
@@ -129,7 +140,6 @@ void protection_tick() {
         // Сравниваем текущее мгновенное значение с чистой исторической базой
         if ((float)current_adc_current > dynamic_threshold) {
             // АНОМАЛИЯ (ВЫБРОС)! Ток резко улетел вверх в N раз относительно старых 2/3 пути.
-            // Блокируем попадание этого всплеска в массив и мгновенно обесточиваем ключи.
             is_protect_triggered = true;
             target_motor_state = MAN_STOP;
             last_motor_state = MAN_STOP;

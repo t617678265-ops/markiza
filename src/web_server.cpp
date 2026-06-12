@@ -3,6 +3,7 @@
 #include "page_setting.h"
 #include "motor.h"
 #include "encoder.h"
+#include "calibrator.h" // Подключаем для доступа к config_pos_closed и config_pos_opened
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <AsyncTCP.h>
@@ -16,7 +17,14 @@ int window_percent = 45;
 String motor_status_text = "Остановлено";
 int mem_positions[] = {255, 255, 255, 255, 255, 255};
 
+// Определение глобальной целевой переменной шагов для motor.h
+long motor_target_steps = 0;
+
 extern volatile long window_pulses;
+
+// Импортируем динамические плавающие границы из калибратора
+extern long config_pos_closed;
+extern long config_pos_opened;
 
 void web_server_init()
 {
@@ -42,6 +50,14 @@ void web_server_init()
 
     server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request)
               {
+        // На лету пересчитываем реальный процент окна для веб-интерфейса на основе шагов
+        long total_steps = config_pos_opened - config_pos_closed;
+        if (total_steps > 0) {
+            window_percent = ((window_pulses - config_pos_closed) * 100) / total_steps;
+            if (window_percent < 0) window_percent = 0;
+            if (window_percent > 100) window_percent = 100;
+        }
+
         String data = String(window_percent) + "," + motor_status_text;
         for (int i = 0; i < 6; i++) {
             data += "," + String(mem_positions[i]);
@@ -71,7 +87,16 @@ void web_server_init()
                 if (target_pos >= 0 && target_pos <= 100) {
                     window_percent = target_pos; 
                     motor_status_text = "Переход...";
-                    Serial.printf("[MOTOR] Едем к сохраненному пресету M%d в положение %d%%\n", id + 1, target_pos);
+                    
+                    // МАТЕМАТИКА ПРЕ СЕТА: переводим проценты пресета в шаги
+                    long total_steps = config_pos_opened - config_pos_closed;
+                    motor_target_steps = config_pos_closed + (total_steps * target_pos) / 100;
+                    
+                    // Переключаем привод в режим автоматического ведения к координате
+                    target_motor_state = GOTO_POSITION;
+                    
+                    Serial.printf("[MOTOR] Едем к сохраненному пресету M%d в положение %d%% (Цель: %ld шагов)\n", 
+                                  id + 1, target_pos, motor_target_steps);
                 }
             }
         }
@@ -110,8 +135,20 @@ void web_server_init()
               {
         if (request->hasParam("pos")) {
             String val = request->getParam("pos")->value();
-            window_percent = val.toInt(); 
-            Serial.println("[MOTOR] Положение изменено слайдером на: " + val + "%");
+            int target_pos = val.toInt();
+            if (target_pos >= 0 && target_pos <= 100) {
+                window_percent = target_pos;
+                motor_status_text = "Переход...";
+                
+                // МАТЕМАТИКА СЛАЙДЕРА: переводим проценты ползунка в шаги
+                long total_steps = config_pos_opened - config_pos_closed;
+                motor_target_steps = config_pos_closed + (total_steps * target_pos) / 100;
+                
+                // Переключаем привод в режим автоматического ведения к координате
+                target_motor_state = GOTO_POSITION;
+                
+                Serial.printf("[MOTOR] Положение изменено слайдером на: %d%% (Цель: %ld шагов)\n", target_pos, motor_target_steps);
+            }
         }
         request->send(200, "text/plain", "OK"); });
 
