@@ -32,6 +32,7 @@ String get_page_main(int percent, String status_text) {
     html += "var currentPercent = " + String(percent) + ";";
     html += "var touchTimer = null;";
     html += "var isLongTouch = false;";
+    html += "var isDragging = false;"; // ЖЕЛЕЗНЫЙ ФЛАГ БЛОКИРОВКИ ОТСКОКОВ ПОЛЗУНКА В МОБИЛЬНЫХ БРАУЗЕРАХ
     
     html += "function updateStatus() {";
     html += "  fetch('/status').then(res => res.text()).then(data => {";
@@ -41,7 +42,8 @@ String get_page_main(int percent, String status_text) {
     
     html += "    document.getElementById('v').innerText = currentPercent + '%';";
     
-    html += "    if(document.activeElement !== document.getElementById('s')) {";
+    // НАДЕЖНАЯ ПРОВЕРКА: Если палец пользователя тащит бегунок, сеть его не перебивает!
+    html += "    if(!isDragging) {";
     html += "      document.getElementById('s').value = sliderTarget;";
     html += "      document.getElementById('sl-hint').innerText = sliderTarget + '%';"; 
     html += "    }";
@@ -57,7 +59,6 @@ String get_page_main(int percent, String status_text) {
     html += "    }";
     html += "  });";
     html += "}";
-
     html += "function onSliderInput(val) {";
     html += "  document.getElementById('sl-hint').innerText = val + '%';"; 
     html += "}";
@@ -68,7 +69,6 @@ String get_page_main(int percent, String status_text) {
     html += "    isLongTouch = true;";
     html += "    var b = document.getElementById('m'+id);";
     html += "    b.style.backgroundColor = '#7fc49c'; b.style.color = '#22252a';";
-    // ИСПРАВЛЕНО: Вместо значения слайдера шлем на сервер честный, реальный процент окна currentPercent!
     html += "    fetch('/mem_save?id=' + id + '&pos=' + currentPercent).then(() => {"; 
     html += "      setTimeout(() => { b.style.backgroundColor = '#1e2127'; b.style.color = '#b0c4de'; updateStatus(); }, 500);";
     html += "    });";
@@ -103,7 +103,13 @@ String get_page_main(int percent, String status_text) {
     html += "</div>";
 
     html += "<div class='slider-title'>Выставить положение: <span class='slider-val-hint' id='sl-hint'>" + String(percent) + "%</span></div>";
-    html += "<input type='range' min='0' max='100' value='" + String(percent) + "' class='slider' id='s' oninput='onSliderInput(this.value)' onchange=\"fetch('/set?pos='+this.value); setTimeout(updateStatus, 100);\">";
+    
+    // ВНЕДРЕНИЕ СОБЫТИЙ БЛОКИРОВКИ ОТСКОКОВ ПРИ ПЕРЕТАСКИВАНИИ ПАЛЬЦЕМ
+    html += "<input type='range' min='0' max='100' value='" + String(percent) + "' class='slider' id='s' ";
+    html += "oninput='onSliderInput(this.value)' ";
+    html += "onmousedown='isDragging=true' ontouchstart='isDragging=true' ";
+    html += "onmouseup='isDragging=false' ontouchend='isDragging=false' ";
+    html += "onchange=\"fetch('/set?pos='+this.value); setTimeout(updateStatus, 100);\">";
 
     html += "<div class='memory-title'>Кнопки быстрой памяти положения:</div>";
     html += "<div class='memory-grid' oncontextmenu='return false;'>";
