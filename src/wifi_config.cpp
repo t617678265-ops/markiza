@@ -57,35 +57,41 @@ void wifi_config_init() {
         WiFi.softAP("windowDrive_Core");
         delay(500); 
 
-        // ГЛАВНЫЙ ЭКРАН ВВОДА WI-FI (ИСПРАВЛЕНО: Подсказка и ссылка перенесены сюда)
         config_server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
             String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
             html += "<style>body{background-color:#22252a; color:#e2e5e9; font-family:sans-serif; display:flex; justify-content:center; align-items:center; min-height:100vh; margin:0; padding:20px; box-sizing:border-box;}";
             html += ".card{background-color:#2d3139; padding:25px; border-radius:12px; width:90%; max-width:360px; text-align:center;} h2{color:#b0c4de; margin-top:0;}";
             html += "label{display:block; margin:14px 0 4px; font-size:14px; color:#a0a5af; text-align:left;} input{width:100%; padding:10px; border:1px solid #3d424d; border-radius:6px; background-color:#1e2127; color:#fff; box-sizing:border-box;}";
             html += ".pass-wrapper{position:relative; width:100%;} .toggle-btn{position:absolute; right:10px; top:50%; transform:translateY(-50%); color:#7f9cc4; font-size:13px; cursor:pointer; font-weight:bold;}";
-            html += "button{width:100%; padding:12px; margin-top:24px; border:none; border-radius:6px; background-color:#7f9cc4; color:#22252a; font-size:16px; font-weight:bold;}";
+            html += "button{width:100%; padding:12px; margin-top:24px; border:none; border-radius:6px; background-color:#7f9cc4; color:#22252a; font-size:16px; font-weight:bold; cursor:pointer;}";
             html += "p{font-size:13px; color:#a0a5af; line-height:1.4; margin-top:20px; text-align:center;} a{color:#7f9cc4; font-weight:bold; text-decoration:none;}</style>";
-            html += "<script>function togglePass(){var p=document.getElementById('p'); var b=document.getElementById('b'); if(p.type==='password'){p.type='text'; b.innerText='СКРЫТЬ';}else{p.type='password'; b.innerText='ПОКАЗАТЬ';}}</script></head><body>";
-            html += "<div class='card'><h2>Настройка Wi-Fi</h2><form method='POST' action='/save'>";
-            html += "<label>Имя сети (SSID)</label><input type='text' name='ssid' required>";
-            html += "<label>Пароль от Wi-Fi</label><div class='pass-wrapper'><input type='password' name='pass' id='p' required><span class='toggle-btn' id='b' onclick='togglePass()'>ПОКАЗАТЬ</span></div>";
-            html += "<button type='submit'>Сохранить настройки</button></form>";
             
-            // ВНЕДРЕНИЕ: Текст и живая ссылка на главном экране ввода сети
+            // СКРИПТ: Тихо собирает данные полей и шлет в бэкенд без перезагрузки страницы
+            html += "<script>function togglePass(){var p=document.getElementById('p'); var b=document.getElementById('b'); if(p.type==='password'){p.type='text'; b.innerText='СКРЫТЬ';}else{p.type='password'; b.innerText='ПОКАЗАТЬ';}}";
+            html += "function sendForm(){var s=document.getElementById('ssid_in').value; var p=document.getElementById('p').value; var btn=document.getElementById('sub_btn'); btn.innerText='Сохранение...'; btn.disabled=true; btn.style.backgroundColor='#5c616b';";
+            html += "fetch('/save?ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent(p)).then(()=>{ btn.innerText='Сохранено! Рестарт...'; btn.style.backgroundColor='#7fc49c'; }); return false;}</script></head><body>";
+            
+            // ИСПРАВЛЕНО: Блокируем стандартный переход формы через onsubmit
+            html += "<div class='card'><h2>Настройка Wi-Fi</h2><form onsubmit='return sendForm()'>";
+            html += "<label>Имя сети (SSID)</label><input type='text' id='ssid_in' required>";
+            html += "<label>Пароль от Wi-Fi</label><div class='pass-wrapper'><input type='password' id='p' required><span class='toggle-btn' id='b' onclick='togglePass()'>ПОКАЗАТЬ</span></div>";
+            html += "<button type='submit' id='sub_btn'>Сохранить настройки</button></form>";
+            
             html += "<p>После сохранения настроек и подключения устройства к домашней сети перейдите по этой ссылке либо скопируйте её в адресную строку браузера:</p>";
             html += "<p><a href='http://okno.local'>http://okno.local</a></p></div></body></html>";
             
             request->send(200, "text/html", html);
         });
 
-        config_server.on("/save", HTTP_POST, [](AsyncWebServerRequest *request){
-            if (request->hasParam("ssid", true) && request->hasParam("pass", true)) {
-                writeStringToEEPROM(0, request->getParam("ssid", true)->value());
-                writeStringToEEPROM(50, request->getParam("pass", true)->value());
+        // БЭКЕНД: Теперь принимает GET-запрос от фонового fetch и тихо перезагружает чип
+        config_server.on("/save", HTTP_GET, [](AsyncWebServerRequest *request){
+            if (request->hasParam("ssid") && request->hasParam("pass")) {
+                writeStringToEEPROM(0, request->getParam("ssid")->value());
+                writeStringToEEPROM(50, request->getParam("pass")->value());
                 EEPROM.commit(); 
                 
-                request->send(200, "text/html", "<body style='background:#22252a;color:#fff;text-align:center;padding-top:50px;'><h3>Настройки сохранены! Перезагрузка...</h3></body>");
+                request->send(200, "text/plain", "OK");
+                
                 delay(1000);
                 ESP.restart();
             } else request->send(400, "text/plain", "Bad Form");
