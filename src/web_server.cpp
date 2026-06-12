@@ -13,7 +13,10 @@
 
 AsyncWebServer server(80);
 
-int window_percent = 45;
+// РАЗДЕЛЕНИЕ ПЕРЕМЕННЫХ: 
+int slider_target_percent = 45; // Уставка ползунка (орган ввода, стоит на месте)
+int window_percent = 45;        // Реальный ход створки (анимация на экране)
+
 String motor_status_text = "Остановлено";
 int mem_positions[] = {255, 255, 255, 255, 255, 255};
 
@@ -46,7 +49,7 @@ void web_server_init()
     }
 
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-              { request->send(200, "text/html", get_page_main(window_percent, motor_status_text)); });
+              { request->send(200, "text/html", get_page_main(slider_target_percent, motor_status_text)); });
 
     server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request)
               {
@@ -58,7 +61,14 @@ void web_server_init()
             if (window_percent > 100) window_percent = 100;
         }
 
-        String data = String(window_percent) + "," + motor_status_text;
+        // Если мотор стоит на месте, синхронизируем уставку ползунка с реальным закрытием
+        if (target_motor_state == MAN_STOP) {
+            if (is_window_fully_closed) slider_target_percent = 0;
+            else if (is_window_fully_open) slider_target_percent = 100;
+        }
+
+        // ОТПРАВКА СТАТУСА: slider_target_percent(0), window_percent(1), motor_status_text(2)
+        String data = String(slider_target_percent) + "," + String(window_percent) + "," + motor_status_text;
         for (int i = 0; i < 6; i++) {
             data += "," + String(mem_positions[i]);
         }
@@ -78,25 +88,37 @@ void web_server_init()
         }
         request->send(200, "text/plain", "OK"); });
 
-    server.on("/mem_go", HTTP_GET, [](AsyncWebServerRequest *request)
+            server.on("/mem_go", HTTP_GET, [](AsyncWebServerRequest *request)
               {
         if (request->hasParam("id")) {
             int id = request->getParam("id")->value().toInt() - 1;
             if (id >= 0 && id < 6) {
                 int target_pos = mem_positions[id];
                 if (target_pos >= 0 && target_pos <= 100) {
-                    window_percent = target_pos; 
-                    motor_status_text = "Переход...";
+                    slider_target_percent = target_pos; // Фиксируем уставку бегунка
                     
-                    // МАТЕМАТИКА ПРЕ СЕТА: переводим проценты пресета в шаги
-                    long total_steps = config_pos_opened - config_pos_closed;
-                    motor_target_steps = config_pos_closed + (total_steps * target_pos) / 100;
-                    
-                    // Переключаем привод в режим автоматического ведения к координате
-                    target_motor_state = GOTO_POSITION;
-                    
-                    Serial.printf("[MOTOR] Едем к сохраненному пресету M%d в положение %d%% (Цель: %ld шагов)\n", 
-                                  id + 1, target_pos, motor_target_steps);
+                    // ЗОЛОТОЙ СТАНДАРТ АВТОМАТИКИ ДЛЯ ПРЕСЕТОВ ПАМЯТИ
+                    if (target_pos == 0) {
+                        motor_status_text = "Закрытие...";
+                        encoder_set_direction(-1);
+                        target_motor_state = MAN_CLOSE; // Валим до силового упора рамы низа!
+                        Serial.printf("[MOTOR] Пресет M%d (0%%): Запущен силовой дожим до упора вниз\n", id + 1);
+                    } 
+                    else if (target_pos == 100) {
+                        motor_status_text = "Открытие...";
+                        encoder_set_direction(1);
+                        target_motor_state = MAN_OPEN;  // Валим до силового упора верха!
+                        Serial.printf("[MOTOR] Пресет M%d (100%%): Запущен силовой накат до упора вверх\n", id + 1);
+                    } 
+                    else {
+                        // Для всех промежуточных положений (1-99%) оставляем координатное ведение
+                        motor_status_text = "Переход...";
+                        long total_steps = config_pos_opened - config_pos_closed;
+                        motor_target_steps = config_pos_closed + (total_steps * target_pos) / 100;
+                        target_motor_state = GOTO_POSITION;
+                        Serial.printf("[MOTOR] Едем к сохраненному пресету M%d в положение %d%% (Цель: %ld шагов)\n", 
+                                      id + 1, target_pos, motor_target_steps);
+                    }
                 }
             }
         }
@@ -108,10 +130,11 @@ void web_server_init()
         request->send(200, "text/html", get_page_setting(current_ip)); });
 
     // ─────────────────────────────────────────────────────────────────────────
-    // ОБРАБОТЧИКИ СЕТИ: ТЕПЕРЬ ТУТ НЕТ МЕДЛЕННЫХ ЛОГОВ, ВСЁ РАБОТАЕТ МГНОВЕННО
+    // ОБРАБОТЧИКИ СЕТИ: РУЧНЫЕ КНОПКИ САЙТА НАПРЯМУЮ УПРАВЛЯЮТ СИЛОВЫМ ЯДРОМ
     // ─────────────────────────────────────────────────────────────────────────
     server.on("/open", HTTP_GET, [](AsyncWebServerRequest *request)
               {
+        slider_target_percent = 100; // Синхронизируем уставку
         motor_status_text = "Открытие...";
         encoder_set_direction(1); 
         target_motor_state = MAN_OPEN; 
@@ -119,6 +142,7 @@ void web_server_init()
 
     server.on("/close", HTTP_GET, [](AsyncWebServerRequest *request)
               {
+        slider_target_percent = 0; // Синхронизируем уставку
         motor_status_text = "Закрытие...";
         encoder_set_direction(-1); 
         target_motor_state = MAN_CLOSE; 
@@ -137,17 +161,29 @@ void web_server_init()
             String val = request->getParam("pos")->value();
             int target_pos = val.toInt();
             if (target_pos >= 0 && target_pos <= 100) {
-                window_percent = target_pos;
-                motor_status_text = "Переход...";
+                slider_target_percent = target_pos; // Фиксируем уставку, ползунок замирает!
                 
-                // МАТЕМАТИКА СЛАЙДЕРА: переводим проценты ползунка в шаги
-                long total_steps = config_pos_opened - config_pos_closed;
-                motor_target_steps = config_pos_closed + (total_steps * target_pos) / 100;
-                
-                // Переключаем привод в режим автоматического ведения к координате
-                target_motor_state = GOTO_POSITION;
-                
-                Serial.printf("[MOTOR] Положение изменено слайдером на: %d%% (Цель: %ld шагов)\n", target_pos, motor_target_steps);
+                // ЗОЛОТОЙ СТАНДАРТ АВТОМАТИКИ ДЛЯ ПОЛЗУНКА СЛАЙДЕРА
+                if (target_pos == 0) {
+                    motor_status_text = "Закрытие...";
+                    encoder_set_direction(-1);
+                    target_motor_state = MAN_CLOSE; // Вместо GOTO_POSITION валим до упора вниз!
+                    Serial.println("[MOTOR] Слайдер переведен в 0%. Запущен силовой дожим в раму.");
+                } 
+                else if (target_pos == 100) {
+                    motor_status_text = "Открытие...";
+                    encoder_set_direction(1);
+                    target_motor_state = MAN_OPEN;  // Вместо GOTO_POSITION валим до упора вверх!
+                    Serial.println("[MOTOR] Слайдер переведен в 100%. Запущен силовой накат вверх.");
+                } 
+                else {
+                    // Для всех промежуточных положений (1-99%) оставляем координатное ведение
+                    motor_status_text = "Переход...";
+                    long total_steps = config_pos_opened - config_pos_closed;
+                    motor_target_steps = config_pos_closed + (total_steps * target_pos) / 100;
+                    target_motor_state = GOTO_POSITION;
+                    Serial.printf("[MOTOR] Положение изменено слайдером на: %d%% (Цель: %ld шагов)\n", target_pos, motor_target_steps);
+                }
             }
         }
         request->send(200, "text/plain", "OK"); });
