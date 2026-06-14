@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <EEPROM.h>      // Подключаем для очистки памяти Wi-Fi при сбросе кнопки
+#include <WiFi.h>        // Подключаем для проверки статуса соединения в Watchdog
 #include "wifi_config.h" 
 #include "web_server.h"  
 #include "motor.h"       
@@ -82,7 +83,7 @@ void loop() {
     // Ядро 0 полностью обрабатывает только сетевые обновления веб-сервера
     web_server_update(); 
 
-    // --- НЕБЛОКИРУЮЩИЙ ОПРОС ФИЗИЧЕСКОЙ КНОПКИ СБРОСА WI-FI НА GPIO 22 ---
+    // --- 1. НЕБЛОКИРУЮЩИЙ ОПРОС ФИЗИЧЕСКОЙ КНОПКИ СБРОСА WI-FI НА GPIO 22 ---
     static unsigned long button_press_start = 0;
     static bool is_pressed = false;
 
@@ -109,6 +110,35 @@ void loop() {
         if (is_pressed) {
             Serial.println("[BUTTON] Кнопка отпущена раньше времени. Сброс таймера.");
             is_pressed = false;
+        }
+    }
+
+    // --- 2. СЕТЕВОЙ СТОРОЖЕВОЙ ТАЙМЕР (WI-FI WATCHDOG) НА ЯДРЕ 0 ---
+    static unsigned long wifi_lost_timer = 0;
+    static bool is_wifi_lost = false;
+
+    // Проверяем сторожа только если контроллер переведен в режим клиента домашней сети (STA)
+    if (WiFi.getMode() == WIFI_STA) {
+        if (WiFi.status() != WL_CONNECTED) {
+            if (!is_wifi_lost) {
+                wifi_lost_timer = millis();
+                is_wifi_lost = true;
+                Serial.println("[WATCHDOG] Wi-Fi соединение потеряно! Запуск защитного таймера на 5 минут...");
+            }
+            
+            // Если сеть лежит непрерывно более 5 минут (300 000 миллисекунд)
+            if (millis() - wifi_lost_timer >= 300000) {
+                Serial.println("[WATCHDOG] Сеть не восстановилась за 5 минут. Автоматический тихий рестарт чипа...");
+                delay(500);
+                ESP.restart(); 
+            }
+        } 
+        else {
+            // Если сеть в порядке, сбрасываем сторожа в исходное состояние
+            if (is_wifi_lost) {
+                Serial.println("[WATCHDOG] Wi-Fi успешно восстановился самостоятельно. Таймер сброшен.");
+                is_wifi_lost = false;
+            }
         }
     }
 
