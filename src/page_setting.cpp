@@ -1,6 +1,6 @@
 #include "page_setting.h"
 
-String get_page_setting(String ip_address, int pwm_val, float sens_val, int stop_adc) {
+String get_page_setting(String ip_address, int pwm_val, float sens_val, int stop_adc, int inv_val) {
     String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
     html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
     
@@ -9,14 +9,14 @@ String get_page_setting(String ip_address, int pwm_val, float sens_val, int stop
     html += "body{background-color:#22252a; color:#e2e5e9; font-family:sans-serif; display:flex; justify-content:center; align-items:center; min-height:100vh; margin:0; padding:20px; box-sizing:border-box;}";
     html += ".card{background-color:#2d3139; padding:25px; border-radius:12px; box-shadow:0 4px 15px rgba(0,0,0,0.3); width:90%; max-width:360px; text-align:center;}";
     html += "h2{color:#b0c4de; margin-top:0;}";
-    html += "<p{font-size:14px; color:#a0a5af; margin:5px 0;}";
+    html += "p{font-size:14px; color:#a0a5af; margin:5px 0;}";
     html += ".ip-info{background-color:#1e2127; padding:10px; border-radius:6px; font-family:monospace; color:#7f9cc4; font-size:16px; margin:15px 0;}";
     
     // Стили форм и полей ввода параметров железа
     html += ".cfg-form{background-color:#1e2127; padding:15px; border-radius:8px; border:1px solid #3d424d; margin-top:15px; text-align:left;}";
     html += ".cfg-group{margin-bottom:15px;}";
     html += ".cfg-group label{display:block; font-size:13px; color:#b0c4de; font-weight:bold; margin-bottom:5px;}";
-    html += ".cfg-group input[type=number]{width:100%; padding:8px; border:1px solid #3d424d; border-radius:6px; background-color:#22252a; color:#fff; font-size:14px; box-sizing:border-box;}";
+    html += ".cfg-group input[type=number], .cfg-group select{width:100%; padding:8px; border:1px solid #3d424d; border-radius:6px; background-color:#22252a; color:#fff; font-size:14px; box-sizing:border-box;}";
     html += ".cfg-group .hint{font-size:11px; color:#a0a5af; margin-top:4px; line-height:1.3;}";
     
     // Стили кнопок управления
@@ -44,7 +44,7 @@ String get_page_setting(String ip_address, int pwm_val, float sens_val, int stop
     html += "<div class='cfg-form'>";
     html += "  <form method='GET' action='/save_hardware_config'>";
     
-    // 1. Скорость открытия окна (ИСПРАВЛЕНО: Прямое значение ШИМ вместо процентов)
+    // 1. Скорость открытия окна
     html += "    <div class='cfg-group'>";
     html += "      <label>1. Мощность мотора (ШИМ 0-255):</label>";
     html += "      <input type='number' name='pwm' min='50' max='230' value='" + String(pwm_val) + "' required>";
@@ -63,6 +63,16 @@ String get_page_setting(String ip_address, int pwm_val, float sens_val, int stop
     html += "      <label>3. Аварийная остановка по току:</label>";
     html += "      <input type='number' name='stop_adc' min='500' max='3000' value='" + String(stop_adc) + "' required>";
     html += "      <div class='hint'>Диапазон: 500 - 3000 АЦП. Мгновенная жесткая отсечка при глухом ударе в раму на старте.</div>";
+    html += "    </div>";
+
+    // 4. Инверсия направления вращения мотора
+    html += "    <div class='cfg-group'>";
+    html += "      <label>4. Направление вращения мотора:</label>";
+    html += "      <select name='inv'>";
+    html += "        <option value='0'" + String(inv_val == 0 ? " selected" : "") + ">Прямое (По часовой)</option>";
+    html += "        <option value='1'" + String(inv_val == 1 ? " selected" : "") + ">Инверсное (Против часовой)</option>";
+    html += "      </select>";
+    html += "      <div class='hint'>Меняет полярность подключения мотора программно без перепайки проводов.</div>";
     html += "    </div>";
     
     html += "    <input type='submit' value='Сохранить конфигурацию' class='btn-save'>";

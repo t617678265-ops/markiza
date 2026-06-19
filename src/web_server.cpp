@@ -13,12 +13,12 @@
 #include <Preferences.h> // ИНТЕГРАЦИЯ: Энергонезависимая память для параметров железа
 
 AsyncWebServer server(80);
-Preferences hw_prefs; // Объект памяти для конфигурации привода
 
 // ГЛОБАЛЬНЫЕ НАСТРОЙКИ ЖЕЛЕЗА ДЛЯ МОДУЛЕЙ MOTOR И PROTECTION
 int config_pwm_speed = 128;         // Скорость ШИМ (20% - 90%, по умолчанию 128)
 float config_protection_sens = 5.0f; // Коэффициент чувствительности адаптивной защиты
 int config_abs_stop_adc = 1500;     // Предел аварийной остановки по току АЦП
+int config_motor_inv = 0;           // Флаг инверсии мотора (0 - прямое, 1 - инверсное)
 
 // РАЗДЕЛЕНИЕ ПЕРЕМЕННЫХ ИНТЕРФЕЙСА
 int slider_target_percent = 45; // Уставка ползунка (орган ввода, стоит на месте)
@@ -40,12 +40,8 @@ void web_server_init()
 {
     EEPROM.begin(512);
 
-    // --- ЧТЕНИЕ И ИНИЦИАЛИЗАЦИЯ ЗАВОДСКИХ НАСТРОЕК ЖЕЛЕЗА ИЗ FLASH ---
-    hw_prefs.begin("hw_cfg", false);
-    config_pwm_speed = hw_prefs.getInt("pwm", 128);
-    config_protection_sens = hw_prefs.getFloat("sens", 5.0f);
-    config_abs_stop_adc = hw_prefs.getInt("stop", 1500);
-    hw_prefs.end();
+    // ИСПРАВЛЕНО: Первоначальное чтение параметров железа полностью удалено отсюда,
+    // так как оно теперь безопасно выполняется внутри функции motor_init() в motor.cpp
 
     for (int i = 0; i < 6; i++)
     {
@@ -58,9 +54,7 @@ void web_server_init()
 
     if (MDNS.begin("markiza"))
     {
-       // Serial.println("[mDNS] Служба запущена! Адрес сайта: http://okno.local");
-       Serial.println("[mDNS] Служба запущена! Адрес сайта: http://markiza.local");
-
+        Serial.println("[mDNS] Служба запущена! Адрес сайта: http://markiza.local");
         MDNS.addService("http", "tcp", 80);
     }
 
@@ -103,7 +97,6 @@ void web_server_init()
             }
         }
         request->send(200, "text/plain", "OK"); });
-
     server.on("/mem_go", HTTP_GET, [](AsyncWebServerRequest *request)
               {
         if (request->hasParam("id")) {
@@ -134,27 +127,40 @@ void web_server_init()
         }
         request->send(200, "text/plain", "OK"); });
 
-    // ИСПРАВЛЕНО: Передаем на страницу настроек текущие живые значения ШИМ, защиты и АЦП
+    // Передаем на страницу настроек текущие живые значения ШИМ, защиты, АЦП и флага инверсии
     server.on("/setting", HTTP_GET, [](AsyncWebServerRequest *request)
               {
         String current_ip = WiFi.localIP().toString();
-        request->send(200, "text/html", get_page_setting(current_ip, config_pwm_speed, config_protection_sens, config_abs_stop_adc)); });
+        request->send(200, "text/html", get_page_setting(current_ip, config_pwm_speed, config_protection_sens, config_abs_stop_adc, config_motor_inv)); });
 
-    // МАРШРУТ СОХРАНЕНИЯ НАСТРОЕК ЖЕЛЕЗА ИЗ HTML-ФОРМЫ В ПАМЯТЬ PREFERENCES
+    // МАРШРУТ СОХРАНЕНИЯ НАСТРОЕК ЖЕЛЕЗА ИЗ HTML-ФОРМЫ В ПАМЯТЬ PREFERENCES С АВТОРЕСТАРТОМ
     server.on("/save_hardware_config", HTTP_GET, [](AsyncWebServerRequest *request)
               {
         if (request->hasParam("pwm") && request->hasParam("sens") && request->hasParam("stop_adc")) {
             config_pwm_speed = request->getParam("pwm")->value().toInt();
             config_protection_sens = request->getParam("sens")->value().toFloat();
             config_abs_stop_adc = request->getParam("stop_adc")->value().toInt();
+            if (request->hasParam("inv")) {
+                config_motor_inv = request->getParam("inv")->value().toInt();
+            } else {
+                config_motor_inv = 0;
+            }
 
             Preferences prefs;
             prefs.begin("hw_cfg", false);
             prefs.putInt("pwm", config_pwm_speed);
             prefs.putFloat("sens", config_protection_sens);
             prefs.putInt("stop", config_abs_stop_adc);
+            prefs.putInt("inv", config_motor_inv); // Сохранение инверсии
             prefs.end();
-            Serial.printf("[CONFIG] Настройки сохранены во Flash! ШИМ: %d, Защита: %.1f, АЦП: %d\n", config_pwm_speed, config_protection_sens, config_abs_stop_adc);
+            Serial.printf("[CONFIG] Настройки сохранены во Flash! ШИМ: %d, Защита: %.1f, АЦП: %d, Инверсия: %d\n", config_pwm_speed, config_protection_sens, config_abs_stop_adc, config_motor_inv);
+            
+            // ИСПРАВЛЕНО: Принудительный рестарт чипа для гарантированного применения ШИМ-пинов в motor_init()
+            String html = "<body style='background:#22252a;color:#fff;text-align:center;font-family:sans-serif;padding-top:50px;'><h3>Конфигурация сохранена!</h3><p>Перезагрузка контроллера для применения пинов...</p></body>";
+            request->send(200, "text/html", html);
+            delay(1000);
+            ESP.restart();
+            return;
         }
         request->redirect("/setting"); });
 
@@ -164,15 +170,21 @@ void web_server_init()
         config_pwm_speed = 128;
         config_protection_sens = 5.0f;
         config_abs_stop_adc = 1500;
+        config_motor_inv = 0; // Сброс инверсии
 
         Preferences prefs;
         prefs.begin("hw_cfg", false);
         prefs.putInt("pwm", 128);
         prefs.putFloat("sens", 5.0f);
         prefs.putInt("stop", 1500);
+        prefs.putInt("inv", 0); // Сброс инверсии во Flash
         prefs.end();
-        Serial.println("[CONFIG] Настройки сброшены на заводские дефолты!");
-        request->redirect("/setting"); });
+        Serial.println("[CONFIG] Настройки сброшены на заводские дефолты! Перезапуск...");
+        
+        String html = "<body style='background:#22252a;color:#fff;text-align:center;font-family:sans-serif;padding-top:50px;'><h3>Параметры сброшены!</h3><p>Перезагрузка контроллера...</p></body>";
+        request->send(200, "text/html", html);
+        delay(1000);
+        ESP.restart(); });
 
     server.on("/open", HTTP_GET, [](AsyncWebServerRequest *request)
               {

@@ -3,15 +3,23 @@
 #include "calibrator.h" // Подключаем калибратор памяти для фиксации упоров
 #include "protection.h" // Подключаем для сброса слепой зоны при реверсе
 #include <Arduino.h>
+#include <Preferences.h> // ИНТЕГРАЦИЯ: Прямое чтение параметров из Flash перед пуском
 
-// ИНТЕГРАЦИЯ: Импортируем живую переменную ШИМ-скорости из бэкенда веб-сервера
+// ИНТЕГРАЦИЯ: Импортируем переменные из бэкенда веб-сервера
 extern int config_pwm_speed;
+extern int config_motor_inv; // ИСПРАВЛЕНО: extern исключает ошибку дублирования символа link-файла
 
-// Назначаем новые свободные GPIO платы Wemos D1 Mini ESP32
-#define PIN_IN1_HIGH 16  // Upper left (PWM)
-#define PIN_IN2_HIGH 17  // Upper right (PWM)
-#define PIN_IN1_LOW  18  // Lower left (Digital)
-#define PIN_IN2_LOW  19  // Lower right (Digital)
+// Новые свободные GPIO платы Wemos D1 Mini ESP32
+#define BASE_IN1_HIGH 16  // Upper left (PWM)
+#define BASE_IN2_HIGH 17  // Upper right (PWM)
+#define BASE_IN1_LOW  18  // Lower left (Digital)
+#define BASE_IN2_LOW  19  // Lower right (Digital)
+
+// Локальные переменные пинов для реализации динамической инверсии
+static int pin_in1_high = BASE_IN1_HIGH;
+static int pin_in2_high = BASE_IN2_HIGH;
+static int pin_in1_low  = BASE_IN1_LOW;
+static int pin_in2_low  = BASE_IN2_LOW;
 
 // Параметры ШИМ LEDC под классический двухъядерный чип ESP32
 #define PWM_FREQ      25000  // Частота 25 кГц
@@ -41,18 +49,44 @@ static bool is_reverse_paused = false;
 int slider_direction = 0; // 0 - стоп, 1 - едем вверх, -1 - едем вниз
 
 void motor_init() {
-    // Настройка нижних ключей
-    pinMode(PIN_IN1_LOW, OUTPUT);
-    pinMode(PIN_IN2_LOW, OUTPUT);
-    digitalWrite(PIN_IN1_LOW, LOW);
-    digitalWrite(PIN_IN2_LOW, LOW);
+    // Читаем конфигурацию из Flash ДО инициализации пинов ШИМ
+    Preferences hw_prefs;
+    hw_prefs.begin("hw_cfg", true); // Режим только для чтения (ReadOnly)
+    config_pwm_speed = hw_prefs.getInt("pwm", 128);
+    config_motor_inv = hw_prefs.getInt("inv", 0);
+    hw_prefs.end();
+
+    // АППАРАТНЫЙ СБРОС: Освобождаем порты в GPIO Matrix перед новой привязкой ШИМ
+    ledcDetachPin(pin_in1_high);
+    ledcDetachPin(pin_in2_high);
+
+    // Программная инверсия пинов на основе свежепрочитанного флага
+    if (config_motor_inv == 1) {
+        pin_in1_high = BASE_IN2_HIGH; // Меняем местами ШИМ-пины 16 и 17
+        pin_in2_high = BASE_IN1_HIGH;
+        pin_in1_low  = BASE_IN2_LOW;  // Меняем местами цифровые пины 18 и 19
+        pin_in2_low  = BASE_IN1_LOW;
+        Serial.println("[DRV] Аппаратная инверсия мотора АКТИВИРОВАНА в коде");
+    } else {
+        pin_in1_high = BASE_IN1_HIGH;
+        pin_in2_high = BASE_IN2_HIGH;
+        pin_in1_low  = BASE_IN1_LOW;
+        pin_in2_low  = BASE_IN2_LOW;
+        Serial.println("[DRV] Аппаратная инверсия мотора ОТКЛЮЧЕНА (Прямое вращение)");
+    }
+
+    // Настройка нижних ключей через динамические переменные пинов
+    pinMode(pin_in1_low, OUTPUT);
+    pinMode(pin_in2_low, OUTPUT);
+    digitalWrite(pin_in1_low, LOW);
+    digitalWrite(pin_in2_low, LOW);
 
     // Конфигурация ШИМ-каналов для классического ядра ESP32 2.х
     ledcSetup(CH_IN1_HIGH, PWM_FREQ, PWM_RES);
     ledcSetup(CH_IN2_HIGH, PWM_FREQ, PWM_RES);
 
-    ledcAttachPin(PIN_IN1_HIGH, CH_IN1_HIGH);
-    ledcAttachPin(PIN_IN2_HIGH, CH_IN2_HIGH);
+    ledcAttachPin(pin_in1_high, CH_IN1_HIGH);
+    ledcAttachPin(pin_in2_high, CH_IN2_HIGH);
 
     ledcWrite(CH_IN1_HIGH, 0);
     ledcWrite(CH_IN2_HIGH, 0);
@@ -67,8 +101,8 @@ void motor_tick() {
         // Удерживаем ключи в жестком силовом нулю во время паузы
         ledcWrite(CH_IN1_HIGH, 0);
         ledcWrite(CH_IN2_HIGH, 0);
-        digitalWrite(PIN_IN1_LOW, LOW);
-        digitalWrite(PIN_IN2_LOW, LOW);
+        digitalWrite(pin_in1_low, LOW);
+        digitalWrite(pin_in2_low, LOW);
 
         if (millis() - reverse_pause_timer >= 1000) {
             is_reverse_paused = false;
@@ -76,22 +110,21 @@ void motor_tick() {
             // Сбрасываем фильтры пускового тока для нового направления
             protection_init();
             
-            // Направление для слайдера или ручного режима задается здесь
             if (target_motor_state == GOTO_POSITION) {
                 if (slider_direction == 1) {
                     encoder_set_direction(1);
-                    digitalWrite(PIN_IN1_LOW, LOW);
-                    digitalWrite(PIN_IN2_LOW, HIGH);
+                    digitalWrite(pin_in1_low, LOW);
+                    digitalWrite(pin_in2_low, HIGH);
                     ledcWrite(CH_IN2_HIGH, 0);
-                    ledcWrite(CH_IN1_HIGH, config_pwm_speed); // УПРАВЛЕНИЕ: Скорость с веб-страницы!
+                    ledcWrite(CH_IN1_HIGH, config_pwm_speed); 
                     current_motor_state = GOTO_POSITION;
                 }
                 else if (slider_direction == -1) {
                     encoder_set_direction(-1);
-                    digitalWrite(PIN_IN2_LOW, LOW);
-                    digitalWrite(PIN_IN1_LOW, HIGH);
+                    digitalWrite(pin_in2_low, LOW);
+                    digitalWrite(pin_in1_low, HIGH);
                     ledcWrite(CH_IN1_HIGH, 0);
-                    ledcWrite(CH_IN2_HIGH, config_pwm_speed); // УПРАВЛЕНИЕ: Скорость с веб-страницы!
+                    ledcWrite(CH_IN2_HIGH, config_pwm_speed); 
                     current_motor_state = GOTO_POSITION;
                 }
             } else {
@@ -109,8 +142,8 @@ void motor_tick() {
         if (abs(window_pulses - motor_target_steps) <= 10) {
             ledcWrite(CH_IN1_HIGH, 0);
             ledcWrite(CH_IN2_HIGH, 0);
-            digitalWrite(PIN_IN1_LOW, LOW);
-            digitalWrite(PIN_IN2_LOW, LOW);
+            digitalWrite(pin_in1_low, LOW);
+            digitalWrite(pin_in2_low, LOW);
             
             slider_direction = 0;
             current_motor_state = MAN_STOP;
@@ -138,10 +171,10 @@ void motor_tick() {
                 protection_init();
                 
                 encoder_set_direction(1);
-                digitalWrite(PIN_IN1_LOW, LOW);
-                digitalWrite(PIN_IN2_LOW, HIGH);
+                digitalWrite(pin_in1_low, LOW);
+                digitalWrite(pin_in2_low, HIGH);
                 ledcWrite(CH_IN2_HIGH, 0);
-                ledcWrite(CH_IN1_HIGH, config_pwm_speed); // УПРАВЛЕНИЕ: Скорость с сайта!
+                ledcWrite(CH_IN1_HIGH, config_pwm_speed); 
                 
                 slider_direction = 1;
                 current_motor_state = GOTO_POSITION; 
@@ -159,14 +192,14 @@ void motor_tick() {
                     Serial.println("[DRV] Слайдер запросил реверс движения ВНИЗ. Включаю паузу 1 сек...");
                     return;
                 }
-                
+
                 protection_init();
                 
                 encoder_set_direction(-1);
-                digitalWrite(PIN_IN2_LOW, LOW);
-                digitalWrite(PIN_IN1_LOW, HIGH);
+                digitalWrite(pin_in2_low, LOW);
+                digitalWrite(pin_in1_low, HIGH);
                 ledcWrite(CH_IN1_HIGH, 0);
-                ledcWrite(CH_IN2_HIGH, config_pwm_speed); // УПРАВЛЕНИЕ: Скорость с сайта!
+                ledcWrite(CH_IN2_HIGH, config_pwm_speed); 
                 
                 slider_direction = -1;
                 current_motor_state = GOTO_POSITION; 
@@ -188,8 +221,8 @@ void motor_tick() {
     if (target_motor_state == MAN_STOP) {
         ledcWrite(CH_IN1_HIGH, 0);
         ledcWrite(CH_IN2_HIGH, 0);
-        digitalWrite(PIN_IN1_LOW, LOW);
-        digitalWrite(PIN_IN2_LOW, LOW);
+        digitalWrite(pin_in1_low, LOW);
+        digitalWrite(pin_in2_low, LOW);
         
         slider_direction = 0;
         
@@ -216,8 +249,8 @@ void motor_tick() {
 
             ledcWrite(CH_IN1_HIGH, 0);
             ledcWrite(CH_IN2_HIGH, 0);
-            digitalWrite(PIN_IN1_LOW, LOW);
-            digitalWrite(PIN_IN2_LOW, LOW);
+            digitalWrite(pin_in1_low, LOW);
+            digitalWrite(pin_in2_low, LOW);
             
             current_motor_state = MAN_STOP; 
             Serial.println("[DRV] ВНИМАНИЕ: Обнаружен ручной реверс на лету! Логика PCNT заморожена...");
@@ -226,22 +259,26 @@ void motor_tick() {
 
         ledcWrite(CH_IN1_HIGH, 0);
         ledcWrite(CH_IN2_HIGH, 0);
-        digitalWrite(PIN_IN1_LOW, LOW);
-        digitalWrite(PIN_IN2_LOW, LOW);
+        digitalWrite(pin_in1_low, LOW);
+        digitalWrite(pin_in2_low, LOW);
         delayMicroseconds(10); 
 
         switch (target_motor_state) {
             case MAN_OPEN:
                 encoder_set_direction(1); 
-                digitalWrite(PIN_IN2_LOW, HIGH);
-                ledcWrite(CH_IN1_HIGH, config_pwm_speed); // УПРАВЛЕНИЕ: Скорость с сайта!
+                digitalWrite(pin_in1_low, LOW);
+                digitalWrite(pin_in2_low, HIGH);
+                ledcWrite(CH_IN2_HIGH, 0);
+                ledcWrite(CH_IN1_HIGH, config_pwm_speed); 
                 Serial.printf("[DRV] Аппаратный PCNT-ШИМ: ОТКРЫТИЕ (ШИМ: %d)\n", config_pwm_speed);
                 break;
 
             case MAN_CLOSE:
                 encoder_set_direction(-1); 
-                digitalWrite(PIN_IN1_LOW, HIGH);
-                ledcWrite(CH_IN2_HIGH, config_pwm_speed); // УПРАВЛЕНИЕ: Скорость с сайта!
+                digitalWrite(pin_in2_low, LOW);
+                digitalWrite(pin_in1_low, HIGH);
+                ledcWrite(CH_IN1_HIGH, 0);
+                ledcWrite(CH_IN2_HIGH, config_pwm_speed); 
                 Serial.printf("[DRV] Аппаратный PCNT-ШИМ: ЗАКРЫТИЕ (ШИМ: %d)\n", config_pwm_speed);
                 break;
                 
