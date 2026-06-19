@@ -7,9 +7,9 @@
 
 // ИНТЕГРАЦИЯ: Импортируем живые переменные для модулей MOTOR и PROTECTION
 extern int config_pwm_speed;
-extern float config_protection_sens; // ИСПРАВЛЕНО: Связываем глобальную переменную защиты
-extern int config_abs_stop_adc;     // ИСПРАВЛЕНО: Связываем глобальную переменную аварийного АЦП
-extern int config_motor_inv;         // ИНТЕГРАЦИЯ: Импортируем флаг инверсии
+extern float config_protection_sens; 
+extern int config_abs_stop_adc;     
+extern int config_motor_inv;         
 
 // Новые свободные GPIO платы Wemos D1 Mini ESP32
 #define BASE_IN1_HIGH 16  // Upper left (PWM)
@@ -50,25 +50,26 @@ static bool is_reverse_paused = false;
 // Внутренний маркер направления движения ИМЕННО для режима слайдера
 int slider_direction = 0; // 0 - стоп, 1 - едем вверх, -1 - едем вниз
 
+// ИСПРАВЛЕНО: Переменные для реализации НЕБЛОКИРУЮЩЕГО плавного пуска (Soft-Start)
+static unsigned long soft_start_timer = 0;
+static int current_soft_pwm = 0;
+
 void motor_init() {
-    // ИСПРАВЛЕНО: Теперь при старте вычитываем абсолютно все параметры железа из Flash, а не только ШИМ
     Preferences hw_prefs;
     hw_prefs.begin("hw_cfg", true); // Режим ReadOnly
     config_pwm_speed = hw_prefs.getInt("pwm", 128);
-    config_protection_sens = hw_prefs.getFloat("sens", 5.0f); // Восстановлено чтение float
-    config_abs_stop_adc = hw_prefs.getInt("stop", 1500);      // Восстановлено чтение int
+    config_protection_sens = hw_prefs.getFloat("sens", 5.0f); 
+    config_abs_stop_adc = hw_prefs.getInt("stop", 1500);      
     config_motor_inv = hw_prefs.getInt("inv", 0);
     hw_prefs.end();
 
-    // АППАРАТНЫЙ СБРОС: Освобождаем порты в GPIO Matrix перед новой привязкой ШИМ
     ledcDetachPin(pin_in1_high);
     ledcDetachPin(pin_in2_high);
 
-    // Программная инверсия пинов на основе свежепрочитанного флага
     if (config_motor_inv == 1) {
-        pin_in1_high = BASE_IN2_HIGH; // Меняем местами ШИМ-пины 16 и 17
+        pin_in1_high = BASE_IN2_HIGH; 
         pin_in2_high = BASE_IN1_HIGH;
-        pin_in1_low  = BASE_IN2_LOW;  // Меняем местами цифровые пины 18 и 19
+        pin_in1_low  = BASE_IN2_LOW;  
         pin_in2_low  = BASE_IN1_LOW;
         Serial.println("[DRV] Аппаратная инверсия мотора АКТИВИРОВАНА в коде");
     } else {
@@ -79,13 +80,11 @@ void motor_init() {
         Serial.println("[DRV] Аппаратная инверсия мотора ОТКЛЮЧЕНА (Прямое вращение)");
     }
 
-    // Настройка нижних ключей через динамические переменные пинов
     pinMode(pin_in1_low, OUTPUT);
     pinMode(pin_in2_low, OUTPUT);
     digitalWrite(pin_in1_low, LOW);
     digitalWrite(pin_in2_low, LOW);
 
-    // Конфигурация ШИМ-каналов для классического ядра ESP32 2.х
     ledcSetup(CH_IN1_HIGH, PWM_FREQ, PWM_RES);
     ledcSetup(CH_IN2_HIGH, PWM_FREQ, PWM_RES);
 
@@ -95,14 +94,12 @@ void motor_init() {
     ledcWrite(CH_IN1_HIGH, 0);
     ledcWrite(CH_IN2_HIGH, 0);
 }
-
 void motor_tick() {
     // Безопасно вычитываем значение аппаратного регистра PCNT в цикле Ядра 1
     encoder_update_count();
 
     // --- 1. ОБРАБОТКА НЕБЛОКИРУЮЩЕЙ ПАУЗЫ БЕЗОПАСНОГО РЕВЕРСА (1000 мс) ---
     if (is_reverse_paused) {
-        // Удерживаем ключи в жестком силовом нулю во время паузы
         ledcWrite(CH_IN1_HIGH, 0);
         ledcWrite(CH_IN2_HIGH, 0);
         digitalWrite(pin_in1_low, LOW);
@@ -110,17 +107,16 @@ void motor_tick() {
 
         if (millis() - reverse_pause_timer >= 1000) {
             is_reverse_paused = false;
-            
-            // Сбрасываем фильтры пускового тока для нового направления
             protection_init();
             
             if (target_motor_state == GOTO_POSITION) {
+                soft_start_timer = millis(); // Перезапуск таймера для слайдера
+                current_soft_pwm = 0;
                 if (slider_direction == 1) {
                     encoder_set_direction(1);
                     digitalWrite(pin_in1_low, LOW);
                     digitalWrite(pin_in2_low, HIGH);
                     ledcWrite(CH_IN2_HIGH, 0);
-                    ledcWrite(CH_IN1_HIGH, config_pwm_speed); 
                     current_motor_state = GOTO_POSITION;
                 }
                 else if (slider_direction == -1) {
@@ -128,19 +124,34 @@ void motor_tick() {
                     digitalWrite(pin_in2_low, LOW);
                     digitalWrite(pin_in1_low, HIGH);
                     ledcWrite(CH_IN1_HIGH, 0);
-                    ledcWrite(CH_IN2_HIGH, config_pwm_speed); 
                     current_motor_state = GOTO_POSITION;
                 }
             } else {
                 if (target_motor_state == MAN_OPEN) encoder_set_direction(1);
                 else if (target_motor_state == MAN_CLOSE) encoder_set_direction(-1);
             }
-            
-            Serial.println("[DRV] Пауза реверса завершена. Силовые мосты принудительно перезапущены к новой цели.");
+            Serial.println("[DRV] Пауза реверса завершена. Готовность к плавному пуску.");
         } else {
             return; 
         }
     }
+
+    // --- НЕБЛОКИРУЮЩИЙ АВТОРАЗГОН (SOFT-START) НА КАЖДОМ ТИКЕ ЯДРА ---
+    if (current_motor_state != MAN_STOP && current_soft_pwm < config_pwm_speed) {
+        if (millis() - soft_start_timer >= 15) { // Приращение каждые 15 мс
+            soft_start_timer = millis();
+            current_soft_pwm += 10; // Шаг нарастания мощности
+            if (current_soft_pwm > config_pwm_speed) current_soft_pwm = config_pwm_speed;
+
+            if (current_motor_state == MAN_OPEN || (current_motor_state == GOTO_POSITION && slider_direction == 1)) {
+                ledcWrite(CH_IN1_HIGH, current_soft_pwm);
+            } 
+            else if (current_motor_state == MAN_CLOSE || (current_motor_state == GOTO_POSITION && slider_direction == -1)) {
+                ledcWrite(CH_IN2_HIGH, current_soft_pwm);
+            }
+        }
+    }
+
     // --- 2. АВТОМАТИЧЕСКОЕ КООРДИНАТНОЕ ВЕДЕНИЕ ОКНА ПО СЛАЙДЕРУ (GOTO_POSITION) ---
     if (target_motor_state == GOTO_POSITION) {
         if (abs(window_pulses - motor_target_steps) <= 10) {
@@ -152,10 +163,9 @@ void motor_tick() {
             slider_direction = 0;
             current_motor_state = MAN_STOP;
             target_motor_state = MAN_STOP;
+            current_soft_pwm = 0;
             
-            Serial.printf("[DRV] Целевая координата слайдера достигнута: %ld (Цель: %ld). Остановка.\n", 
-                          window_pulses, motor_target_steps);
-            
+            Serial.printf("[DRV] Слайдер: координата достигнута %ld. Стоп.\n", window_pulses);
             calibrator_save_current_position();
             return;
         } 
@@ -168,21 +178,21 @@ void motor_tick() {
                     is_protect_triggered = false;
                     slider_direction = 1; 
                     current_motor_state = MAN_STOP;
-                    Serial.println("[DRV] Слайдер запросил реверс движения ВВЕРХ. Включаю паузу 1 сек...");
                     return;
                 }
                 
                 protection_init();
-                
                 encoder_set_direction(1);
                 digitalWrite(pin_in1_low, LOW);
                 digitalWrite(pin_in2_low, HIGH);
                 ledcWrite(CH_IN2_HIGH, 0);
-                ledcWrite(CH_IN1_HIGH, config_pwm_speed); 
+                
+                soft_start_timer = millis(); // Инициализация разгона
+                current_soft_pwm = 0;
+                ledcWrite(CH_IN1_HIGH, 0);
                 
                 slider_direction = 1;
                 current_motor_state = GOTO_POSITION; 
-                Serial.printf("[DRV] Авто-слайдер: старт движения ВВЕРХ к %ld шагам\n", motor_target_steps);
             }
         }
         else if (window_pulses > motor_target_steps) {
@@ -193,51 +203,42 @@ void motor_tick() {
                     is_protect_triggered = false;
                     slider_direction = -1; 
                     current_motor_state = MAN_STOP;
-                    Serial.println("[DRV] Слайдер запросил реверс движения ВНИЗ. Включаю паузу 1 сек...");
                     return;
                 }
 
                 protection_init();
-                
                 encoder_set_direction(-1);
                 digitalWrite(pin_in2_low, LOW);
                 digitalWrite(pin_in1_low, HIGH);
                 ledcWrite(CH_IN1_HIGH, 0);
-                ledcWrite(CH_IN2_HIGH, config_pwm_speed); 
+                
+                soft_start_timer = millis(); // Инициализация разгона
+                current_soft_pwm = 0;
+                ledcWrite(CH_IN2_HIGH, 0);
                 
                 slider_direction = -1;
                 current_motor_state = GOTO_POSITION; 
-                Serial.printf("[DRV] Авто-слайдер: старт движения ВНИЗ к %ld шагам\n", motor_target_steps);
             }
         }
         return; 
     }
 
-    if (target_motor_state == MAN_CLOSE && is_window_fully_closed) {
-        target_motor_state = MAN_STOP;
-        Serial.printf("[DRV] Блокировка пуска: окно уже находится в раме низа (%ld шагов)!\n", config_pos_closed);
-    }
-    if (target_motor_state == MAN_OPEN && is_window_fully_open) {
-        target_motor_state = MAN_STOP;
-        Serial.printf("[DRV] Блокировка пуска: окно уже находится в упоре верха (%ld шагов)!\n", config_pos_opened);
-    }
+    if (target_motor_state == MAN_CLOSE && is_window_fully_closed) target_motor_state = MAN_STOP;
+    if (target_motor_state == MAN_OPEN && is_window_fully_open) target_motor_state = MAN_STOP;
 
     if (target_motor_state == MAN_STOP) {
         ledcWrite(CH_IN1_HIGH, 0);
         ledcWrite(CH_IN2_HIGH, 0);
         digitalWrite(pin_in1_low, LOW);
         digitalWrite(pin_in2_low, LOW);
-        
         slider_direction = 0;
+        current_soft_pwm = 0;
         
         if (current_motor_state != MAN_STOP) {
-            Serial.println("[DRV] Аппаратный PCNT-ШИМ: МОТОР ОСТАНОВЛЕН");
-            
             if (is_protect_triggered) {
                 calibrator_check_stop_event(current_motor_state);
                 is_protect_triggered = false; 
             } else {
-                Serial.println("[DRV] Ручной останов пользователем с сайта. Сохранение позиции...");
                 calibrator_save_current_position();
             }
             current_motor_state = MAN_STOP;
@@ -250,14 +251,7 @@ void motor_tick() {
             is_reverse_paused = true;
             reverse_pause_timer = millis();
             is_protect_triggered = false; 
-
-            ledcWrite(CH_IN1_HIGH, 0);
-            ledcWrite(CH_IN2_HIGH, 0);
-            digitalWrite(pin_in1_low, LOW);
-            digitalWrite(pin_in2_low, LOW);
-            
             current_motor_state = MAN_STOP; 
-            Serial.println("[DRV] ВНИМАНИЕ: Обнаружен ручной реверс на лету! Логика PCNT заморожена...");
             return;
         }
 
@@ -267,14 +261,16 @@ void motor_tick() {
         digitalWrite(pin_in2_low, LOW);
         delayMicroseconds(10); 
 
+        soft_start_timer = millis(); // Запуск таймера разгона для ручного режима
+        current_soft_pwm = 0;
+
         switch (target_motor_state) {
             case MAN_OPEN:
                 encoder_set_direction(1); 
                 digitalWrite(pin_in1_low, LOW);
                 digitalWrite(pin_in2_low, HIGH);
                 ledcWrite(CH_IN2_HIGH, 0);
-                ledcWrite(CH_IN1_HIGH, config_pwm_speed); 
-                Serial.printf("[DRV] Аппаратный PCNT-ШИМ: ОТКРЫТИЕ (ШИМ: %d)\n", config_pwm_speed);
+                ledcWrite(CH_IN1_HIGH, 0); 
                 break;
 
             case MAN_CLOSE:
@@ -282,8 +278,7 @@ void motor_tick() {
                 digitalWrite(pin_in2_low, LOW);
                 digitalWrite(pin_in1_low, HIGH);
                 ledcWrite(CH_IN1_HIGH, 0);
-                ledcWrite(CH_IN2_HIGH, config_pwm_speed); 
-                Serial.printf("[DRV] Аппаратный PCNT-ШИМ: ЗАКРЫТИЕ (ШИМ: %d)\n", config_pwm_speed);
+                ledcWrite(CH_IN2_HIGH, 0); 
                 break;
                 
             default:
