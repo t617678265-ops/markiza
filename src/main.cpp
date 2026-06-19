@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <EEPROM.h>      // Подключаем для очистки памяти Wi-Fi при сбросе кнопки
 #include <WiFi.h>        // Подключаем для проверки статуса соединения в Watchdog
+#include <Preferences.h> // ИНТЕГРАЦИЯ: Подключаем для счетчика сброса по питанию
 #include "wifi_config.h" 
 #include "web_server.h"  
 #include "motor.h"       
@@ -50,6 +51,31 @@ void setup() {
     delay(500);
     Serial.println("\n[SYS] Старт Window Driver на двухъядерной архитектуре ESP32...");
 
+    // --- ИНТЕГРАЦИЯ: АЛГОРИТМ СЧЕТЧИКА СБРОСА WI-FI ПО ПИТАНИЮ ---
+    Preferences power_prefs;
+    power_prefs.begin("hw_cfg", false);
+    int boot_err = power_prefs.getInt("boot_err", 0);
+    boot_err++;
+    
+    Serial.printf("[POWER] Счетчик быстрых запусков питания: %d из 5\n", boot_err);
+    
+    if (boot_err >= 5) {
+        Serial.println("[POWER] Лимит 5 быстрых включений достигнут! Стираю Wi-Fi и сбрасываю контроллер...");
+        power_prefs.putInt("boot_err", 0);
+        power_prefs.end();
+        
+        EEPROM.begin(512);
+        EEPROM.write(0, 0xFF); // Стираем маркер сети
+        EEPROM.commit();
+        
+        delay(1000);
+        ESP.restart(); // Перезапуск в режим Точки Доступа
+    } else {
+        power_prefs.putInt("boot_err", boot_err);
+        power_prefs.end();
+    }
+    // ------------------------------------------------------------
+
     // Инициализация низкоуровневого железа привода
     motor_init();   
     encoder_init(); 
@@ -82,6 +108,18 @@ void setup() {
 void loop() {
     // Ядро 0 полностью обрабатывает только сетевые обновления веб-сервера
     web_server_update(); 
+
+    // --- ИНТЕГРАЦИЯ: НЕБЛОКИРУЮЩИЙ СБРОС СЧЕТЧИКА ПИТАНИЯ ПОСЛЕ ПЯТИ СЕКУНД СТАБИЛЬНОЙ РАБОТЫ ---
+    static bool boot_counter_cleared = false;
+    if (!boot_counter_cleared && millis() >= 5000) {
+        Preferences power_prefs;
+        power_prefs.begin("hw_cfg", false);
+        power_prefs.putInt("boot_err", 0);
+        power_prefs.end();
+        boot_counter_cleared = true;
+        Serial.println("[POWER] Система стабильна более 5 секунд. Счетчик ложных стартов сброшен в 0.");
+    }
+    // -------------------------------------------------------------------------------------------
 
     // --- 1. НЕБЛОКИРУЮЩИЙ ОПРОС ФИЗИЧЕСКОЙ КНОПКИ СБРОСА WI-FI НА GPIO 22 ---
     static unsigned long button_press_start = 0;

@@ -78,7 +78,7 @@ void wifi_config_init() {
             html += "<button type='submit' id='sub_btn'>Сохранить настройки</button></form>";
             
             html += "<p>После сохранения настроек и подключения устройства к домашней сети перейдите по этой ссылке либо скопируйте её в адресную строку браузера:</p>";
-            html += "<p><a href='http://okno.local'>http://okno.local</a></p></div></body></html>";
+            html += "<p><a href='http://markiza.local'>http://markiza.local</a></p></div></body></html>";
             
             request->send(200, "text/html", html);
         });
