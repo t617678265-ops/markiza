@@ -5,9 +5,11 @@
 #include <Arduino.h>
 #include <Preferences.h> // ИНТЕГРАЦИЯ: Прямое чтение параметров из Flash перед пуском
 
-// ИНТЕГРАЦИЯ: Импортируем переменные из бэкенда веб-сервера
+// ИНТЕГРАЦИЯ: Импортируем живые переменные для модулей MOTOR и PROTECTION
 extern int config_pwm_speed;
-extern int config_motor_inv; // ИСПРАВЛЕНО: extern исключает ошибку дублирования символа link-файла
+extern float config_protection_sens; // ИСПРАВЛЕНО: Связываем глобальную переменную защиты
+extern int config_abs_stop_adc;     // ИСПРАВЛЕНО: Связываем глобальную переменную аварийного АЦП
+extern int config_motor_inv;         // ИНТЕГРАЦИЯ: Импортируем флаг инверсии
 
 // Новые свободные GPIO платы Wemos D1 Mini ESP32
 #define BASE_IN1_HIGH 16  // Upper left (PWM)
@@ -49,10 +51,12 @@ static bool is_reverse_paused = false;
 int slider_direction = 0; // 0 - стоп, 1 - едем вверх, -1 - едем вниз
 
 void motor_init() {
-    // Читаем конфигурацию из Flash ДО инициализации пинов ШИМ
+    // ИСПРАВЛЕНО: Теперь при старте вычитываем абсолютно все параметры железа из Flash, а не только ШИМ
     Preferences hw_prefs;
-    hw_prefs.begin("hw_cfg", true); // Режим только для чтения (ReadOnly)
+    hw_prefs.begin("hw_cfg", true); // Режим ReadOnly
     config_pwm_speed = hw_prefs.getInt("pwm", 128);
+    config_protection_sens = hw_prefs.getFloat("sens", 5.0f); // Восстановлено чтение float
+    config_abs_stop_adc = hw_prefs.getInt("stop", 1500);      // Восстановлено чтение int
     config_motor_inv = hw_prefs.getInt("inv", 0);
     hw_prefs.end();
 

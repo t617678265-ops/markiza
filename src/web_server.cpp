@@ -126,15 +126,13 @@ void web_server_init()
         String current_ip = WiFi.localIP().toString();
         request->send(200, "text/html", get_page_setting(current_ip, config_pwm_speed, config_protection_sens, config_abs_stop_adc, config_motor_inv)); });
 
-    // ИСПРАВЛЕНО: Полностью восстановлен твой оригинальный рабочий алгоритм прямого чтения параметров!
+    // ИСПРАВЛЕНО: Полностью возвращен твой оригинальный рабочий парсер и моментальный редирект!
     server.on("/save_hardware_config", HTTP_GET, [](AsyncWebServerRequest *request)
               {
-        // Прямое чтение параметров формы по твоей исходной логике (безhasParam)
         config_pwm_speed = request->getParam("pwm")->value().toInt();
         config_protection_sens = request->getParam("sens")->value().toFloat();
         config_abs_stop_adc = request->getParam("stop_adc")->value().toInt();
         
-        // Дополнительно читаем инверсию, если она выбрана
         if (request->hasParam("inv")) {
             config_motor_inv = request->getParam("inv")->value().toInt();
         } else {
@@ -152,13 +150,13 @@ void web_server_init()
         Serial.printf("[CONFIG] Успешно сохранено во Flash! ШИМ: %d, Защита: %.1f, АЦП: %d, Инверсия: %d\n", 
                       config_pwm_speed, config_protection_sens, config_abs_stop_adc, config_motor_inv);
         
-        // Безопасный рестарт строго после закрытия соединения, чтобы страница отображалась корректно
+        // Асинхронный рестарт привязан строго к закрытию текущей сессии ответа
         request->onDisconnect([]() {
             ESP.restart();
         });
         
-        request->send(200, "text/html; charset=utf-8", 
-            "<body style='background:#22252a;color:#fff;text-align:center;font-family:sans-serif;padding-top:50px;'><h3>Конфигурация сохранена!</h3><p>Перезагрузка платы...</p></body>");
+        // Моментальный возврат на страницу без промежуточных окон с текстом "ОК"
+        request->redirect("/setting");
         return; });
 
     server.on("/reset_hardware_default", HTTP_GET, [](AsyncWebServerRequest *request)
@@ -181,8 +179,7 @@ void web_server_init()
             ESP.restart();
         });
         
-        request->send(200, "text/html; charset=utf-8", 
-            "<body style='background:#22252a;color:#fff;text-align:center;font-family:sans-serif;padding-top:50px;'><h3>Параметры сброшены!</h3><p>Перезагрузка контроллера...</p></body>"); });
+        request->redirect("/setting"); });
 
     server.on("/open", HTTP_GET, [](AsyncWebServerRequest *request)
               {
@@ -271,4 +268,3 @@ void web_server_init()
 }
 
 void web_server_update() {}
-
