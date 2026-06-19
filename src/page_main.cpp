@@ -89,7 +89,7 @@ String get_page_main(int percent, String status_text) {
     html += "</script>";
 
     html += "</head><body onload='updateStatus()'>";
-    html += "<div class='card'><h2>Управление Окном</h2>";
+    html += "<div class='card'><h2>Управление Шторкой</h2>";
     html += "<div class='status-val' id='v'>" + String(percent) + "%</div>";
 
     html += "<svg class='window-svg' width='200' height='200' viewBox='0 0 200 200'>";

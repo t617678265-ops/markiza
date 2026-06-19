@@ -40,9 +40,6 @@ void web_server_init()
 {
     EEPROM.begin(512);
 
-    // ИСПРАВЛЕНО: Первоначальное чтение параметров железа полностью удалено отсюда,
-    // так как оно теперь безопасно выполняется внутри функции motor_init() в motor.cpp
-
     for (int i = 0; i < 6; i++)
     {
         mem_positions[i] = EEPROM.read(200 + i);
@@ -63,7 +60,6 @@ void web_server_init()
 
     server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request)
               {
-        // На лету пересчитываем реальный процент окна для веб-интерфейса на основе шагов
         long total_steps = config_pos_opened - config_pos_closed;
         if (total_steps > 0) {
             window_percent = ((window_pulses - config_pos_closed) * 100) / total_steps;
@@ -71,13 +67,11 @@ void web_server_init()
             if (window_percent > 100) window_percent = 100;
         }
 
-        // Если мотор стоит на месте, синхронизируем уставку ползунка с реальным закрытием
         if (target_motor_state == MAN_STOP) {
             if (is_window_fully_closed) slider_target_percent = 0;
             else if (is_window_fully_open) slider_target_percent = 100;
         }
 
-        // ОТПРАВКА СТАТУСА: slider_target_percent(0), window_percent(1), motor_status_text(2)
         String data = String(slider_target_percent) + "," + String(window_percent) + "," + motor_status_text;
         for (int i = 0; i < 6; i++) {
             data += "," + String(mem_positions[i]);
@@ -127,64 +121,68 @@ void web_server_init()
         }
         request->send(200, "text/plain", "OK"); });
 
-    // Передаем на страницу настроек текущие живые значения ШИМ, защиты, АЦП и флага инверсии
     server.on("/setting", HTTP_GET, [](AsyncWebServerRequest *request)
               {
         String current_ip = WiFi.localIP().toString();
         request->send(200, "text/html", get_page_setting(current_ip, config_pwm_speed, config_protection_sens, config_abs_stop_adc, config_motor_inv)); });
 
-    // МАРШРУТ СОХРАНЕНИЯ НАСТРОЕК ЖЕЛЕЗА ИЗ HTML-ФОРМЫ В ПАМЯТЬ PREFERENCES С АВТОРЕСТАРТОМ
+    // ИСПРАВЛЕНО: Полностью восстановлен твой оригинальный рабочий алгоритм прямого чтения параметров!
     server.on("/save_hardware_config", HTTP_GET, [](AsyncWebServerRequest *request)
               {
-        if (request->hasParam("pwm") && request->hasParam("sens") && request->hasParam("stop_adc")) {
-            config_pwm_speed = request->getParam("pwm")->value().toInt();
-            config_protection_sens = request->getParam("sens")->value().toFloat();
-            config_abs_stop_adc = request->getParam("stop_adc")->value().toInt();
-            if (request->hasParam("inv")) {
-                config_motor_inv = request->getParam("inv")->value().toInt();
-            } else {
-                config_motor_inv = 0;
-            }
-
-            Preferences prefs;
-            prefs.begin("hw_cfg", false);
-            prefs.putInt("pwm", config_pwm_speed);
-            prefs.putFloat("sens", config_protection_sens);
-            prefs.putInt("stop", config_abs_stop_adc);
-            prefs.putInt("inv", config_motor_inv); // Сохранение инверсии
-            prefs.end();
-            Serial.printf("[CONFIG] Настройки сохранены во Flash! ШИМ: %d, Защита: %.1f, АЦП: %d, Инверсия: %d\n", config_pwm_speed, config_protection_sens, config_abs_stop_adc, config_motor_inv);
-            
-            // ИСПРАВЛЕНО: Принудительный рестарт чипа для гарантированного применения ШИМ-пинов в motor_init()
-            String html = "<body style='background:#22252a;color:#fff;text-align:center;font-family:sans-serif;padding-top:50px;'><h3>Конфигурация сохранена!</h3><p>Перезагрузка контроллера для применения пинов...</p></body>";
-            request->send(200, "text/html", html);
-            delay(1000);
-            ESP.restart();
-            return;
+        // Прямое чтение параметров формы по твоей исходной логике (безhasParam)
+        config_pwm_speed = request->getParam("pwm")->value().toInt();
+        config_protection_sens = request->getParam("sens")->value().toFloat();
+        config_abs_stop_adc = request->getParam("stop_adc")->value().toInt();
+        
+        // Дополнительно читаем инверсию, если она выбрана
+        if (request->hasParam("inv")) {
+            config_motor_inv = request->getParam("inv")->value().toInt();
+        } else {
+            config_motor_inv = 0;
         }
-        request->redirect("/setting"); });
 
-    // МАРШРУТ СБРОСА КОНФИГУРАЦИИ НА НАЧАЛЬНЫЕ ЗАВОДСКИЕ ЗНАЧЕНИЯ ИЗ КОДА
+        Preferences prefs;
+        prefs.begin("hw_cfg", false);
+        prefs.putInt("pwm", config_pwm_speed);
+        prefs.putFloat("sens", config_protection_sens);
+        prefs.putInt("stop", config_abs_stop_adc);
+        prefs.putInt("inv", config_motor_inv); 
+        prefs.end(); 
+        
+        Serial.printf("[CONFIG] Успешно сохранено во Flash! ШИМ: %d, Защита: %.1f, АЦП: %d, Инверсия: %d\n", 
+                      config_pwm_speed, config_protection_sens, config_abs_stop_adc, config_motor_inv);
+        
+        // Безопасный рестарт строго после закрытия соединения, чтобы страница отображалась корректно
+        request->onDisconnect([]() {
+            ESP.restart();
+        });
+        
+        request->send(200, "text/html; charset=utf-8", 
+            "<body style='background:#22252a;color:#fff;text-align:center;font-family:sans-serif;padding-top:50px;'><h3>Конфигурация сохранена!</h3><p>Перезагрузка платы...</p></body>");
+        return; });
+
     server.on("/reset_hardware_default", HTTP_GET, [](AsyncWebServerRequest *request)
               {
         config_pwm_speed = 128;
         config_protection_sens = 5.0f;
         config_abs_stop_adc = 1500;
-        config_motor_inv = 0; // Сброс инверсии
+        config_motor_inv = 0; 
 
         Preferences prefs;
         prefs.begin("hw_cfg", false);
         prefs.putInt("pwm", 128);
         prefs.putFloat("sens", 5.0f);
         prefs.putInt("stop", 1500);
-        prefs.putInt("inv", 0); // Сброс инверсии во Flash
+        prefs.putInt("inv", 0); 
         prefs.end();
         Serial.println("[CONFIG] Настройки сброшены на заводские дефолты! Перезапуск...");
         
-        String html = "<body style='background:#22252a;color:#fff;text-align:center;font-family:sans-serif;padding-top:50px;'><h3>Параметры сброшены!</h3><p>Перезагрузка контроллера...</p></body>";
-        request->send(200, "text/html", html);
-        delay(1000);
-        ESP.restart(); });
+        request->onDisconnect([]() {
+            ESP.restart();
+        });
+        
+        request->send(200, "text/html; charset=utf-8", 
+            "<body style='background:#22252a;color:#fff;text-align:center;font-family:sans-serif;padding-top:50px;'><h3>Параметры сброшены!</h3><p>Перезагрузка контроллера...</p></body>"); });
 
     server.on("/open", HTTP_GET, [](AsyncWebServerRequest *request)
               {
@@ -240,10 +238,13 @@ void web_server_init()
               {
         EEPROM.write(0, 0xFF); 
         EEPROM.commit();       
-        String html = "<body style='background:#22252a;color:#fff;text-align:center;font-family:sans-serif;padding-top:50px;'><h3>Память Wi-Fi очищена!</h3><p>Плата перезагружается...</p></body>";
-        request->send(200, "text/html", html);
-        delay(2000);
-        ESP.restart(); });
+        
+        request->onDisconnect([]() {
+            ESP.restart();
+        });
+        
+        request->send(200, "text/html; charset=utf-8", 
+            "<body style='background:#22252a;color:#fff;text-align:center;font-family:sans-serif;padding-top:50px;'><h3>Память Wi-Fi очищена!</h3><p>Плата перезагружается...</p></body>"); });
 
     server.on("/update", HTTP_POST, [](AsyncWebServerRequest *request)
               { request->send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK"); }, [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final)
@@ -259,7 +260,6 @@ void web_server_init()
         }
         if (final) {
             if (Update.end(true)) {
-                delay(500);
                 ESP.restart();
             } else {
                 Update.printError(Serial);
@@ -271,3 +271,4 @@ void web_server_init()
 }
 
 void web_server_update() {}
+
