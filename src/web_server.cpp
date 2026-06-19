@@ -56,9 +56,11 @@ void web_server_init()
         }
     }
 
-    if (MDNS.begin("okno"))
+    if (MDNS.begin("markiza"))
     {
-        Serial.println("[mDNS] Служба запущена! Адрес сайта: http://okno.local");
+       // Serial.println("[mDNS] Служба запущена! Адрес сайта: http://okno.local");
+       Serial.println("[mDNS] Служба запущена! Адрес сайта: http://markiza.local");
+
         MDNS.addService("http", "tcp", 80);
     }
 
