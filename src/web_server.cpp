@@ -62,7 +62,9 @@ void web_server_init()
               {
         long total_steps = config_pos_opened - config_pos_closed;
         if (total_steps > 0) {
-            window_percent = ((window_pulses - config_pos_closed) * 100) / total_steps;
+            //window_percent = ((window_pulses - config_pos_closed) * 100) / total_steps;
+            window_percent = (((window_pulses - config_pos_closed) * 100) + (total_steps / 2)) / total_steps;
+
             if (window_percent < 0) window_percent = 0;
             if (window_percent > 100) window_percent = 100;
         }

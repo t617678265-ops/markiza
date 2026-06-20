@@ -154,7 +154,13 @@ void motor_tick() {
 
     // --- 2. АВТОМАТИЧЕСКОЕ КООРДИНАТНОЕ ВЕДЕНИЕ ОКНА ПО СЛАЙДЕРУ (GOTO_POSITION) ---
     if (target_motor_state == GOTO_POSITION) {
-        if (abs(window_pulses - motor_target_steps) <= 10) {
+        if (abs(window_pulses - motor_target_steps) <= 0) {
+
+             // === ВСТАВИТЬ СТРОГО СЮДА ПЕРВЫМ ДЕЙСТВИЕМ ===
+            Serial.printf("[DIAG] СТОП СЛАЙДЕРА! Текущие шаги: %ld | Цель из памяти: %ld | Разница: %ld\n", 
+                          window_pulses, motor_target_steps, (motor_target_steps - window_pulses));
+            // =============================================
+
             ledcWrite(CH_IN1_HIGH, 0);
             ledcWrite(CH_IN2_HIGH, 0);
             digitalWrite(pin_in1_low, LOW);
