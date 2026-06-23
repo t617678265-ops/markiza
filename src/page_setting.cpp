@@ -47,8 +47,8 @@ String get_page_setting(String ip_address, int pwm_val, float sens_val, int stop
     // 1. Скорость открытия окна
     html += "    <div class='cfg-group'>";
     html += "      <label>1. Мощность мотора (ШИМ 0-255):</label>";
-    html += "      <input type='number' name='pwm' min='50' max='230' value='" + String(pwm_val) + "' required>";
-    html += "      <div class='hint'>Рабочий диапазон: 50 - 230. Заводское значение: 128. Максимум 230 для защиты силовых конденсаторов драйвера.</div>";
+    html += "      <input type='number' name='pwm' min='50' max='250' value='" + String(pwm_val) + "' required>";
+    html += "      <div class='hint'>Рабочий диапазон: 50 - 250. Заводское значение: 128. Максимум 250 для защиты силовых конденсаторов драйвера.</div>";
     html += "    </div>";
     
     // 2. Чувствительность к препятствиям

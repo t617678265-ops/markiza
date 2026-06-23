@@ -87,7 +87,7 @@ void protection_tick() {
 
     // --- 5. КОНТРОЛЬ ВРЕМЕНИ СЛЕПОЙ ЗОНЫ ПУСКА (100 мс) ---
     if (in_blanking) {
-        if (millis() - start_blanking_timer >= 100) {
+        if (millis() - start_blanking_timer >= 500) {
             in_blanking = false; // Окно закрылось, переходим к адаптивному накоплению хода
             speed_calc_timer = millis();
             Serial.println("[PROTECT] Слепая зона пуска завершена. Начался сбор адаптивного массива.");
