@@ -31,6 +31,10 @@ String get_page_main(int percent, String status_text) {
 
     html += "<script>";
     html += "var currentPercent = " + String(percent) + ";";
+    html += "var animatedPercent = " + String(percent) + ";";
+    html += "var lastPercent = " + String(percent) + ";";
+    html += "var lastUpdateTime = performance.now();";
+    html += "var stepPerMs = 0;";
     html += "var touchTimer = null;";
     html += "var isLongTouch = false;";
     html += "var isDragging = false;";
@@ -47,17 +51,41 @@ String get_page_main(int percent, String status_text) {
     html += "  document.getElementById('sunClipRect').setAttribute('y',blindBot);";
     html += "  document.getElementById('sunClipRect').setAttribute('height',bot-blindBot+10);";
     html += "}";
+    html += "function smoothLoop(now) {";
+    html += "  if (!isDragging) {";
+    html += "    var elapsed = now - lastUpdateTime;";
+    html += "    var diff = currentPercent - lastPercent;";
+    html += "    if (Math.abs(diff) > 0.1) {";
+    html += "      var targetPos = lastPercent + stepPerMs * elapsed;";
+    html += "      if ((diff > 0 && targetPos > currentPercent) || (diff < 0 && targetPos < currentPercent)) { targetPos = currentPercent; }";
+    html += "      animatedPercent = targetPos;";
+    html += "    } else { animatedPercent = currentPercent; }";
+    html += "    updateWindow(animatedPercent);";
+    html += "  }";
+    html += "  requestAnimationFrame(smoothLoop);";
+    html += "}";
     html += "function updateStatus(){";
     html += "  fetch('/status').then(res=>res.text()).then(data=>{";
     html += "    var arr=data.split(',');";
     html += "    var sliderTarget=parseInt(arr[0]);";
-    html += "    currentPercent=parseInt(arr[1]);";
-    html += "    document.getElementById('v').innerText=currentPercent+'%';";
+    html += "    var nextPercent=parseInt(arr[1]);";
+    html += "    var now = performance.now();";
+    html += "    if (nextPercent !== currentPercent) {";
+    html += "      lastPercent = animatedPercent;";
+    html += "      var timeDiff = now - lastUpdateTime;";
+    /* Защита от деления на 0 при первом запросе, за базовый интервал опроса берется 1000мс */
+    html += "      if (timeDiff <= 0) timeDiff = 1000;"; 
+    html += "      stepPerMs = (nextPercent - lastPercent) / timeDiff;";
+    html += "      currentPercent = nextPercent;";
+    html += "      lastUpdateTime = now;";
+    html += "    } else if (animatedPercent !== currentPercent) {";
+    /* Если данные не изменились, но анимация еще не догнала цель, продолжаем движение с прежней скоростью */
+    html += "    } else { lastPercent = currentPercent; stepPerMs = 0; lastUpdateTime = now; }";
+    html += "    document.getElementById('v').innerText=nextPercent+'%';";
     html += "    if(!isDragging){";
     html += "      document.getElementById('s').value=sliderTarget;";
     html += "      document.getElementById('sl-hint').innerText=sliderTarget+'%';";
     html += "    }";
-    html += "    updateWindow(currentPercent);";
     html += "    for(var i=1;i<=6;i++){";
     html += "      var mVal=parseInt(arr[2+i]);";
     html += "      var b=document.getElementById('m'+i);";
@@ -68,7 +96,11 @@ String get_page_main(int percent, String status_text) {
     html += "}";
     html += "function onSliderInput(val){";
     html += "  document.getElementById('sl-hint').innerText=val+'%';";
-    html += "  updateWindow(parseInt(val));";
+    html += "  currentPercent = parseInt(val);";
+    html += "  animatedPercent = currentPercent;";
+    html += "  lastPercent = currentPercent;";
+    html += "  stepPerMs = 0;";
+    html += "  updateWindow(currentPercent);";
     html += "}";
     html += "function startMem(id){";
     html += "  isLongTouch=false;";
@@ -86,6 +118,7 @@ String get_page_main(int percent, String status_text) {
     html += "  if(!isLongTouch){fetch('/mem_go?id='+id);}";
     html += "}";
     html += "setInterval(updateStatus,1000);";
+    html += "requestAnimationFrame(smoothLoop);";
     html += "</script>";
 
     html += "</head><body onload='updateStatus()'>";
